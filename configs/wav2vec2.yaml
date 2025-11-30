@@ -1,0 +1,51 @@
+wandb_project: "distqat"
+experiment_prefix: "wav2vec2-full"
+
+data:
+  dataset_name: "openslr/librispeech_asr"
+  dataset_config: "clean"
+  dataset_split: "train.100"
+  # dataset_name: "nh0znoisung/timit"
+  # dataset_config: "default"
+  # dataset_split: "train"
+
+  num_workers: 0
+  precision: "fp16-mixed"
+  task_type: "speech"
+  full_model_name: "facebook/wav2vec2-base"
+  sampling_rate: 16000
+
+diloco:
+  inner_optim:
+    type: "adam"
+    adam_lr: 1e-5
+    adam_weight_decay: 0.005
+    adam_betas1: 0.9
+    adam_betas2: 0.95
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.07
+    sgd_momentum: 0.9
+    sgd_nesterov: True
+  inner_steps: 500
+  outer_steps: 100
+  batch_size_per_step: 32
+  min_refresh_period: 5.0
+  max_refresh_period: 30.0
+  averaging_timeout: 60.0
+  verbose: true
+
+model_pipeline:
+  pipeline:
+    - model_name: "wav2vec2.full"
+  forward_timeout: 90.0
+  backward_timeout: 180.0
+
+param_mirror:
+  enable: false
+  refresh_every: 30
+  checkpoint_dir: "checkpoints/wav2vec2_full"
+
+world_size: 1
+device: "cuda"
+log_dir: "logs/wav2vec2_full"

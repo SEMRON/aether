@@ -1,0 +1,8 @@
+This directory should be used to store deploy keys, and other secrets that shall not be automatically synced.
+(neither to deployments, nor to git)
+
+Example to generate a keypair for cloning the repo:
+$ ssh-keygen -t rsa -b 4096 -C "aether clone key" -f clone-key
+
+and the corresponding clone-key.pub can then be added as a read only deploy key on github
+https://github.com/<org>/<repo>/settings/keys

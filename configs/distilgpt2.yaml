@@ -1,0 +1,49 @@
+wandb_project: "distqat"
+experiment_prefix: "distilgpt2-full"
+
+data:
+  dataset_name: "wikitext"
+  dataset_config: "wikitext-103-raw-v1"
+  # dataset_name: "Trelis/tiny-shakespeare"
+  # dataset_config: "default"
+  num_workers: 0
+  precision: "fp16-mixed"
+  seq_len: 1024
+  task_type: "llm"
+  full_model_name: "distilbert/distilgpt2"
+
+diloco:
+  inner_optim:
+    type: "adam"
+    adam_lr: 4e-4
+    adam_weight_decay: 0.1
+    adam_betas1: 0.9
+    adam_betas2: 0.95
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.07
+    sgd_momentum: 0.9
+    sgd_nesterov: True
+  inner_steps: 500
+  outer_steps: 100
+  batch_size_per_step: 64
+  min_refresh_period: 5.0
+  max_refresh_period: 30.0
+  averaging_timeout: 60.0
+  verbose: true
+
+model_pipeline:
+  pipeline:
+    - model_name: "distilgpt2.full"
+      hid_dim: 768
+  forward_timeout: 90.0
+  backward_timeout: 180.0
+
+param_mirror:
+  enable: false
+  refresh_every: 30
+  checkpoint_dir: "checkpoints/distilgpt2_full"
+
+world_size: 2
+device: "cuda"
+log_dir: "logs/distilgpt2_full"

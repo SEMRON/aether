@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+import "dht.proto";
+
+service SwarmDHT {
+  // find out recipient's DHTID and possibly update its routing table
+  rpc rpc_ping(PingRequest) returns (PingResponse);
+
+  // request a node to store one or multiple data items (key - value - expiration)
+  rpc rpc_store(StoreRequest) returns (StoreResponse);
+
+  // for given keys, request values (if stored) or a list of peers that are likely to have them
+  rpc rpc_find(FindRequest) returns (FindResponse);
+}

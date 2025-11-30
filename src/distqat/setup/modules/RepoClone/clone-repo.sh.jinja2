@@ -1,0 +1,64 @@
+#!/bin/bash
+set -euo pipefail
+REPO="{{ source_url }}"
+USER={{ username }}
+
+# Verify script is being run as the correct user
+CURRENT_USER=$(whoami)
+if [ "$CURRENT_USER" != "$USER" ]; then
+  echo "Error: This script must be run as user $USER, but is being run as $CURRENT_USER"
+  exit 1
+fi
+
+# Handle different path types for sources_target_dir
+if [[ "{{ sources_target_dir }}" = /* ]]; then
+  # Absolute path
+  BASE="{{ sources_target_dir }}"
+elif [[ "{{ sources_target_dir }}" = ~* ]]; then
+  # Path starting with ~
+  BASE="{{ sources_target_dir }}"
+  BASE="${BASE/#\~/$HOME}"
+else
+  # Relative path
+  HOMEDIR=$(readlink -f ~)
+  BASE="$HOMEDIR/{{ sources_target_dir }}"
+fi
+
+echo "Cloning repository..."
+mkdir -p "$(dirname "$BASE")"
+export GIT_SSH_COMMAND="ssh $(echo $(cat /opt/aether/ssh_args.*))"
+
+if [ -d "$BASE/.git" ]; then
+  echo "Repository already exists at $BASE"
+  cd "$BASE"
+
+  # Stash any local changes
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "Stashing local changes..."
+    git stash
+  fi
+
+  # Check if the remote URL matches
+  CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
+  if [ "$CURRENT_REMOTE" != "$REPO" ]; then
+    echo "Remote URL mismatch. Adding new remote..."
+    if git remote | grep -q '^origin$'; then
+      git remote set-url origin "$REPO"
+    else
+      git remote add origin "$REPO"
+    fi
+  fi
+
+  # Fetch from the remote
+  echo "Fetching from remote..."
+  git fetch origin
+else
+  echo "Cloning repository..."
+  git clone "$REPO" "$BASE"
+fi
+
+{% if source_ref is not none and source_ref %}
+echo "Checking out ref: {{ source_ref }}"
+git -C "$BASE" checkout "{{ source_ref }}"
+{% endif %}
+git -C "$BASE" config core.sshCommand "$GIT_SSH_COMMAND"

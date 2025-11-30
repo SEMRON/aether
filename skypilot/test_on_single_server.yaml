@@ -1,0 +1,27 @@
+resources:
+  accelerators: A10G:1
+  infra: aws/eu-west-1
+  autostop: 60
+  ports:
+    - 100-65535
+
+num_nodes: 1
+workdir: .
+
+secrets:
+  WANDB_API_KEY: null
+
+setup: |
+  set -euxo pipefail
+  pip install git+https://github.com/learning-at-home/hivemind.git
+  python src/distqat/distributed/proto/build.py
+  pip install -e .
+
+run: |
+  set -euxo pipefail
+
+  PUBLIC_IP="$(curl -s http://checkip.amazonaws.com)"
+  PUBLIC_IP="$(echo -n "$PUBLIC_IP" | tr -d '\r\n ')"
+
+  PYTHONPATH="$PWD/src" python run_local.py \
+    --public-ip "${PUBLIC_IP}"

@@ -1,0 +1,60 @@
+wandb_project: "distqat"
+experiment_prefix: "resnet18"
+
+data:
+  # dataset_name: "ylecun/mnist"
+  dataset_name: "uoft-cs/cifar10"
+  # dataset_name: "ILSVRC/imagenet-1k"
+  dataset_split: "train"
+  task_type: "cv"
+  num_workers: 0
+  precision: "fp16-mixed"
+  num_channels: 3 # change to 1 for mnist
+  img_size: 32 # change to 224 for imagenet
+
+diloco:
+  inner_optim:
+    type: "adam"
+    adam_lr: 4e-4
+    adam_weight_decay: 0.1
+    adam_betas1: 0.9
+    adam_betas2: 0.95
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.07
+    sgd_momentum: 0.9
+    sgd_nesterov: True
+  inner_steps: 500
+  outer_steps: 100
+  batch_size_per_step: 64
+  min_refresh_period: 5.0
+  max_refresh_period: 30.0
+  averaging_timeout: 60.0
+  verbose: true
+
+model_pipeline:
+  pipeline:
+    - model_name: "resnet18.head"
+      num_classes: 10
+    - model_name: "resnet18.tail"
+      num_classes: 10
+  forward_timeout: 90.0
+  backward_timeout: 180.0
+
+param_mirror:
+  enable: false
+  refresh_every: 300
+  checkpoint_dir: "checkpoints/resnet18"
+
+
+data_server:
+  ipc_host: "127.0.0.1"
+  ipc_port: 52555
+  ipc_key: "distqat"
+  num_workers: 1
+  pool_size: 32
+
+world_size: 2
+device: "cuda"
+max_expert_index: 128
+log_dir: "logs/resnet18"

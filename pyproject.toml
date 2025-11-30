@@ -1,0 +1,48 @@
+[project]
+name = "distqat"
+version = "0.1.0"
+description = "Distributed quantization-aware training prototype"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "pydantic",
+  "wandb",
+  "multiaddr>=0.0.9",
+  "torch_optimizer",
+  "pydanclick",
+  "pydantic-yaml",
+  "deepmerge",
+  "datasets",
+  "transformers",
+  "hivemind @ git+https://github.com/learning-at-home/hivemind.git@937198fd364d20edeafd1044b12c3b88521d7701",
+  "nicegui",
+  "asyncssh",
+]
+authors = [
+  { name = "SEMRON" },
+]
+
+[project.optional-dependencies]
+docs = [
+  "sphinx>=6,<8",
+  "myst-parser[linkify]>=2.0,<3.0",
+  "sphinxcontrib-mermaid>=0.9,<1.0",
+]
+gpuspecific = [
+  "torch",
+  "torchvision",
+  "torchaudio",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "grpcio-tools", "hivemind"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"distqat.distributed.proto" = ["*.proto"]

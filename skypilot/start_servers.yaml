@@ -1,0 +1,36 @@
+name: aws_server
+
+resources:
+  accelerators: A10G:1
+  infra: aws/eu-west-1
+  autostop: 5
+  ports:
+    - 50000
+    - 50500
+    - 50501
+    - 50502
+    - 50503
+    - 51500
+    - 51501
+    - 51502
+    - 51503
+
+num_nodes: 1
+workdir: .
+
+secrets:
+  WANDB_API_KEY: null
+
+setup: |
+  set -euxo pipefail
+  pip install -e .
+
+run: |
+  set -euxo pipefail
+
+  PUBLIC_IP="$(curl -s http://checkip.amazonaws.com)"
+  PUBLIC_IP="$(echo -n "$PUBLIC_IP" | tr -d '\r\n ')"
+
+  PYTHONPATH="$PWD/src" python start_servers.py \
+    --num-servers "$NUM_SERVERS" \
+    --initial-peers "$INITIAL_PEERS"

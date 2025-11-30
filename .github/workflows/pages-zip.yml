@@ -1,0 +1,59 @@
+name: Build ZIP and Publish to GitHub Pages
+
+on:
+  push:
+    branches: [ demo ]   # adjust as needed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write          # required for Pages deployment
+  id-token: write       # required for OIDC when deploying Pages
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Make a clean ZIP of tracked files (honors .gitattributes export-ignore)
+      - name: Create site artifact folder
+        run: mkdir -p site
+
+      - name: Create repo.zip from HEAD
+        run: git archive -o site/repo.zip HEAD
+
+      # # (Optional) Add a simple index page with a download link
+      # - name: Add index.html
+      #   run: |
+      #     cat > site/index.html <<'HTML'
+      #     <!doctype html>
+      #     <meta charset="utf-8">
+      #     <title>Downloads</title>
+      #     <h1>Downloads</h1>
+      #     <p><a href="./repo.zip">Download repo.zip</a></p>
+      #     HTML
+
+      # Package for Pages
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,26 @@
+{
+  "os": {
+    "id": "ubuntu",
+    "version_id": "24.04",
+    "platform_id": null
+  },
+  "authorized_pubkey": [],
+  "create_new_user": false,
+  "deploy_key_private": null,
+  "deploy_key_public": null,
+  "extras": {},
+  "gpu_vendor": null,
+  "install_drivers": false,
+  "final_commands": null,
+  "open_ports": [
+    "50000/tcp",
+    "51000/tcp",
+    "50500-50700/tcp",
+    "51500-51700/tcp"
+  ],
+  "source_url": "https://github.com/SEMRON/aether.git",
+  "source_ref": "master",
+  "sources_target_dir": "distqat",
+  "username": "ubuntu",
+  "management_user": null
+}

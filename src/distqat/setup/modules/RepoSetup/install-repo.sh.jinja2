@@ -1,0 +1,97 @@
+#!/bin/bash
+set -euo pipefail
+REPO="{{ source_url }}"
+USER={{ username }}
+
+# Verify script is being run as the correct user
+CURRENT_USER=$(whoami)
+if [ "$CURRENT_USER" != "$USER" ]; then
+  echo "Error: This script must be run as user $USER, but is being run as $CURRENT_USER"
+  exit 1
+fi
+
+# Handle different path types for sources_target_dir
+if [[ "{{ sources_target_dir }}" = /* ]]; then
+  # Absolute path
+  BASE="{{ sources_target_dir }}"
+elif [[ "{{ sources_target_dir }}" = ~* ]]; then
+  # Path starting with ~
+  BASE="{{ sources_target_dir }}"
+  BASE="${BASE/#\~/$HOME}"
+else
+  # Relative path
+  HOMEDIR=$(readlink -f ~)
+  BASE="$HOMEDIR/{{ sources_target_dir }}"
+fi
+
+PYTHON_VERSION=3.12
+
+cd "$BASE"
+
+echo "Setting up virtual environment..."
+if [ ! -d ".venv" ]; then
+  uv venv --python $PYTHON_VERSION .venv
+fi
+source .venv/bin/activate
+export UV_HTTP_TIMEOUT=180
+
+echo "Configuring torch version"
+
+# Make pyproject.toml modifications idempotent
+if [ -f "pyproject.toml" ]; then
+  if grep -q "^# MARKER: aether auto setup managed section" pyproject.toml; then
+    # Delete from marker line to end of file
+    sed -i '/^# MARKER: aether auto setup managed section/,$d' pyproject.toml
+  fi
+fi
+
+# Add marker for managed section
+echo "# MARKER: aether auto setup managed section" >> pyproject.toml
+
+add_index_to_pyproject() {
+  local name="$1"
+  local url="$2"
+
+  echo "" >> pyproject.toml
+  echo "[[tool.uv.index]]" >> pyproject.toml
+  echo "name = \"${name}\"" >> pyproject.toml
+  echo "url = \"${url}\"" >> pyproject.toml
+  echo "explicit = true" >> pyproject.toml
+}
+
+add_package_explicit_index() {
+    local index="$1"
+    shift  # Remove first argument, leaving only packages
+
+    echo "" >> pyproject.toml
+    echo "[tool.uv.sources]" >> pyproject.toml
+
+    # Add a line for each package
+    for package in "$@"; do
+        echo "${package} = { index = \"${index}\" }" >> pyproject.toml
+    done
+}
+
+# Choose Torch build based on GPU vendor
+{% if gpu_vendor == "nvidia" %}
+echo "Using CUDA torch"
+add_index_to_pyproject pytorch_cuda https://download.pytorch.org/whl/cu124
+add_package_explicit_index pytorch_cuda torch torchvision torchaudio
+{% elif gpu_vendor == "amd" %}
+echo "Using ROCm torch"
+add_index_to_pyproject pytorch_rocm https://download.pytorch.org/whl/rocm6.0
+add_package_explicit_index pytorch_rocm torch torchvision torchaudio
+{% else %}
+echo "Using CPU torch"
+add_index_to_pyproject pytorch_cpu https://download.pytorch.org/whl/cpu
+add_package_explicit_index pytorch_cpu torch torchvision torchaudio
+{% endif %}
+
+echo "Uninstalling existing torch packages if present..."
+if ! uv pip uninstall torch torchvision torchaudio 2>/dev/null; then
+  echo "Failed to uninstall torch packages (this is normal if they weren't installed)"
+fi
+
+echo "Installing .."
+
+uv pip install ".[gpuspecific]"
