@@ -15,12 +15,14 @@ class Server(BaseModel):
     
     # Network/Process configuration
     mapped_monitor_port: Optional[int] = None
+    mapped_host_port: Optional[int] = None
+    grpc_announce_port: Optional[int] = None
     
     # Worker configuration
     num_servers: int = 1
     device: str = "cpu"
     batch_size: int = 16
-    grpc_announce_port: Optional[int] = None
+    inner_steps: int = 50
 
     @property
     def display_name(self) -> str:

@@ -155,7 +155,7 @@ def get_train_val_datasets(data_config: DataConfig):
         tuple: (train_loader, val_loader) - PyTorch DataLoaders for training and validation
     """
     if data_config.task_type == "cv":
-        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True)
+        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True, token=data_config.hf_token)
         content_key = "image"
         # Define transforms based on dataset
         if "mnist" in data_config.dataset_name:
@@ -204,7 +204,7 @@ def get_train_val_datasets(data_config: DataConfig):
             content_key = "text"
             tokenizer_name = data_config.full_model_name
 
-        ds = load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True)
+        ds = load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True, token=data_config.hf_token)
         train_dataset = SequencePackingDataset(
             dataset=ds,
             tokenizer=AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True, model_max_length=int(1e30)),
@@ -216,7 +216,7 @@ def get_train_val_datasets(data_config: DataConfig):
     elif data_config.task_type == "speech":
         processor = Wav2Vec2Processor.from_pretrained(data_config.full_model_name)
         train_dataset = SpeechDataset(
-            load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True),
+            load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True, token=data_config.hf_token),
             processor,
         )
         val_dataset = None

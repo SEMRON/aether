@@ -3,7 +3,7 @@ from typing import Tuple, Dict, List, Optional
 from hivemind.utils.logging import get_logger
 from hivemind.dht import DHT
 
-from distqat.distributed.server.dht_handler import get_experts, get_expert_batch_size
+from distqat.distributed.server.dht_handler import get_experts, get_expert_batch_size, get_expert_inner_steps
 from distqat.config import Config
 
 logger = get_logger(__name__)
@@ -72,14 +72,15 @@ def discover_experts(dht: DHT, config: Config) -> Tuple[Dict[int, Dict], Dict[in
                 
                 # Retrieve batch_size_per_step for this expert
                 batch_size = get_expert_batch_size(dht, uid, latest=True)
-                
+                inner_steps = get_expert_inner_steps(dht, uid, latest=True)
                 if expert_index not in available_experts:
                     available_experts[expert_index] = {}
                 
                 available_experts[expert_index][stage_name] = {
                     'uid': uid,
                     'endpoint': remote_expert.endpoint,
-                    'batch_size_per_step': batch_size
+                    'batch_size_per_step': batch_size,
+                    'inner_steps': inner_steps
                 }
         
         # Separate complete and incomplete pipelines

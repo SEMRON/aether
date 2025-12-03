@@ -58,8 +58,7 @@ python run_local.py --config-path configs/resnet18.yaml --wandb-project None
 python run_local.py --config-path configs/resnet18_split.yaml --num-servers 2
 ```
 
-After waiting a few seconds up 
-If you see console logs that are similar to this:
+After waiting a few seconds up to a minute if you see console logs that are similar to this:
 ```
 Nov 26 17:29:58.382 [INFO] Complete pipeline found for expert_index 0: ['head', 'tail']
 Nov 26 17:29:58.382 [INFO] Complete pipeline found for expert_index 1: ['head', 'tail']
@@ -169,6 +168,10 @@ If there is port mapping then specify the external port by setting `network-serv
 ### Failed to connect to bootstrap peer
 Check if the IP address of the initial peers is correct and the port is accessible. If port mapping is used then after copying the initial peers you need to change the port so from:
 e.g.: `/ip4/213.173.111.105/tcp/50000/p2p/QmPkcZiABVfu41yA3qTF1LpmB9z2ZqjuwjJi2TeBj6fZd6` to `/ip4/213.173.111.105/tcp/<mapped port>/p2p/QmPkcZiABVfu41yA3qTF1LpmB9z2ZqjuwjJi2TeBj6fZd6`
+
+### Hugging face authentication error
+`datasets.exceptions.DatasetNotFoundError: Dataset 'ILSVRC/imagenet-1k' is a gated dataset on the Hub. You must be authenticated to access it.`
+If you get this error it means the dataset you're trying to use is gated and you need to log in to hugging face either by calling `hf auth login` in the terminal or passing `HF_TOKEN` as an environment variable to your machine.
 
 ### Installation SSL: Certificate error 
 ```

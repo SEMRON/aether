@@ -20,6 +20,7 @@ For more information continue reading below or refer to the full documentation:
 - [Run Modes](#run-modes)
   - [Fully Local Sandbox](#fully-local-sandbox)
   - [Bring Your Own Machines](#bring-your-own-machines)
+  - [SkyPilot Deployment](#skypilot-deployment)
 - [Configuration](#configuration)
 - [Observability](#observability)
 - [Resilience & Failover](#resilience--failover)
@@ -101,6 +102,26 @@ python run_local.py  # defaults to configs/resnet18.yaml
      --initial-peers "${INITIAL_PEERS}"
    ```
    Repeat on as many machines as you like; each process will auto-assign to open pipeline slots.
+
+### SkyPilot Deployment
+Distqat ships ready-to-run SkyPilot specs for cloud fleets. Review the [SkyPilot server setup guide](skypilot/skypilot-server-setup.md) to prepare the API server and credentials.
+```bash
+export WANDB_API_KEY=<your_wandb_token>
+
+# First rollout
+sky launch -c distqat-trainer ./skypilot/start_trainer_client.yaml --secret WANDB_API_KEY
+sky launch -c distqat-servers ./skypilot/start_servers.yaml \
+  --env NUM_SERVERS=2 \
+  --env INITIAL_PEERS="/ip4/<trainer_public_ip>/tcp/50000/p2p/<peer_id>" \
+  --secret WANDB_API_KEY
+
+# Subsequent runs (reuse setup)
+sky launch -c distqat-trainer ./skypilot/start_trainer_client.yaml --secret WANDB_API_KEY --no-setup
+sky launch -c distqat-servers ./skypilot/start_servers.yaml \
+  --env NUM_SERVERS=2 \
+  --env INITIAL_PEERS="/ip4/<trainer_public_ip>/tcp/50000/p2p/<peer_id>" \
+  --secret WANDB_API_KEY --no-setup
+```
 
 ### Preview of adaptive batch sizing for heterogenous training
 Here is an example of how heterogenous training will look like with adaptive batchsizing. Currently the batch size still has to be set manually.

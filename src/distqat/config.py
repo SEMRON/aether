@@ -8,6 +8,7 @@ from pydanclick import from_pydantic
 from pydantic_yaml import parse_yaml_file_as
 from deepmerge import always_merger
 import importlib
+import os
 from pathlib import Path
 from .quant.scheme import QuantScheme
 from .utils.rules import OverrideRule
@@ -19,6 +20,18 @@ class DataConfig(BaseModel):
     dataset_name: str = "mnist"
     dataset_config: Optional[str] = None
     dataset_split: Optional[str] = "train"
+    hf_token: Optional[str] = None
+
+    @field_validator("hf_token", mode="before")
+    @classmethod
+    def _fill_hf_token_from_env(cls, value: Optional[str]) -> Optional[str]:
+        """
+        Allow HF token to come from the HF_TOKEN environment variable when the
+        value is not explicitly provided (in YAML or CLI).
+        """
+        if value is None:
+            return os.getenv("HF_TOKEN")
+        return value
 
     num_workers: int = 1
     shuffle_buffer_size: int = 8192
@@ -163,9 +176,10 @@ class NetworkConfig(BaseModel):
     monitor_port: int = 50000
     client_port: int = 51000
     trainer_base_port: int = 50100 # Base port for trainer, actual port = base + idx (0 to max_expert_index)
-    server_base_hostport: int = 50500  # Base port for server host, actual port = base + idx (0 to num_servers)
-    server_base_grpcport: int = 51500  # Base port for server gRPC, actual port = base + idx (0 to num_servers)
-    server_base_grpc_announceport: int = 51500  # Base port for server announce necessary when port mapping is used,  actual port = base + idx (0 to num_servers)
+    server_base_hostport: int = 50500  # Base port for server host (local binding), actual port = base + idx (0 to num_servers)
+    server_base_hostport_announce: int = 50500  # Base port for server host announce (DHT peer discovery), necessary when port mapping is used, actual port = base + idx (0 to num_servers)
+    server_base_grpcport: int = 51500  # Base port for server gRPC (local binding), actual port = base + idx (0 to num_servers)
+    server_base_grpc_announceport: int = 51500  # Base port for server gRPC announce (expert endpoint), necessary when port mapping is used, actual port = base + idx (0 to num_servers)
 
 class ParamMirrorConfig(BaseModel):
     enable: bool = True

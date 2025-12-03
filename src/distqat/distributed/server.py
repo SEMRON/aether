@@ -106,7 +106,7 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         optim_cls=optim_cls,
         optim_kwargs=optim_kwargs,
         min_batch_size=1,
-        max_batch_size=64,
+        max_batch_size=cfg.diloco.batch_size_per_step,
         quant_config=cfg.quant if not disable_quant else None,
         dht=dht,
         cfg=cfg,
@@ -115,9 +115,11 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
     )
 
     # Store batch_size_per_step in DHT for this expert
-    from distqat.distributed.server.dht_handler import store_expert_batch_size
+    from distqat.distributed.server.dht_handler import store_expert_batch_size, store_expert_inner_steps
     batch_size = cfg.diloco.batch_size_per_step
+    inner_steps = cfg.diloco.inner_steps
     store_expert_batch_size(dht, expert_uid, batch_size, expiration=60, wait=True)
+    store_expert_inner_steps(dht, expert_uid, inner_steps, expiration=60, wait=True)
     logger.info(f"Stored batch_size_per_step={batch_size} for expert {expert_uid}")
 
     return server, dht, expert_uid

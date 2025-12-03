@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
 
 
-    if not is_wandb_logged_in() and args.no_wandb:
+    if not args.no_wandb and not is_wandb_logged_in():
         raise RuntimeError("Wandb is not logged in, please login to wandb using the wandb login command or set the wandb_project to None through the config file or command line argument")
 
     init_ui(args.no_wandb)

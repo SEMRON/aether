@@ -71,6 +71,9 @@ class SwarmTrainer:
         register_process(self.model.dht, self.config.experiment_prefix, ttl=300.0)
         self.shm_client = DataClient(host=self.config.data_server.ipc_host, port=int(self.config.data_server.ipc_port), authkey=self.config.data_server.ipc_key.encode())
 
+        self.batch_size = self.config.diloco.batch_size_per_step
+        self.remaining_batch = None
+        self.remaining_release = None
 
     def parameters(self):
         yield from self.model.parameters()
@@ -119,21 +122,53 @@ class SwarmTrainer:
 
 
     def step(self, inner_step: int, step: int):
-        batch, release = self.shm_client.next_batch()
-        inputs = batch["inputs"]
-        labels = batch["labels"]
+        inputs_list = []
+        labels_list = []
+        releases_to_call = []
+        
+        samples_needed = self.batch_size
+        
+        while samples_needed > 0:
+            if self.remaining_batch is None:
+                self.remaining_batch, self.remaining_release = self.shm_client.next_batch()
+            
+            current_inputs = self.remaining_batch["inputs"]
+            current_labels = self.remaining_batch["labels"]
+            available = current_inputs.shape[0]
+            
+            take = min(samples_needed, available)
+            
+            inputs_list.append(current_inputs[:take])
+            labels_list.append(current_labels[:take])
+            
+            samples_needed -= take
+            
+            if take == available:
+                releases_to_call.append(self.remaining_release)
+                self.remaining_batch = None
+                self.remaining_release = None
+            else:
+                self.remaining_batch["inputs"] = current_inputs[take:]
+                self.remaining_batch["labels"] = current_labels[take:]
+        
+        inputs = torch.cat(inputs_list)
+        labels = torch.cat(labels_list)
+        
+        for release in releases_to_call:
+            try:
+                release()
+            except Exception:
+                pass
+        
         if inner_step % 10 == 0:
             logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps}")
+            logger.info(f"Batch size: {inputs.shape}")
         
         outputs = self.model(inputs)
 
         loss = self.task_type_loss(inputs, outputs, labels)
         loss.backward()
         self.model.post_optimizer_callback(step, loss.item())
-        try:
-            release()
-        except Exception:
-            pass
 
     def train(self):
         logger.info(f"============= Training for {self.num_total_steps} steps =============")

@@ -164,13 +164,16 @@ class DistributedGui:
 
                                 batch_sz = ui.number('Batch', value=s.batch_size, min=1, format='%.0f',
                                                    on_change=lambda e, s=s: update_server_config(s, 'batch_size', int(e.value))).classes('w-20').tooltip('Batch Size')
+                                
+                                inner_steps = ui.number('Inner Steps', value=s.inner_steps, min=1, format='%.0f',
+                                                   on_change=lambda e, s=s: update_server_config(s, 'inner_steps', int(e.value))).classes('w-20').tooltip('Inner Steps')
 
 
                             with ui.row().classes('gap-2'):
                                 async def start(name=s.display_name):
                                     server = self.controller.get_server(name)
                                     try:
-                                        await self.controller.start_worker_nodes([name], server.num_servers, server.device, server.batch_size, server.grpc_announce_port)
+                                        await self.controller.start_worker_nodes([name], server.num_servers, server.device, server.batch_size, server.inner_steps, server.grpc_announce_port, server.mapped_host_port)
                                         self.update_log_views()
                                         ui.notify(f"Started worker on {name}")
                                     except Exception as e:
@@ -317,8 +320,10 @@ class DistributedGui:
 
                         with ui.row().classes('w-2/3 gap-2'):
                             self.device_input = ui.select(['cpu', 'cuda', 'rocm'], value='cpu', label='Device').classes('w-1/3')
-                            self.grpc_port_input = ui.number('GRPC Port', placeholder='Auto', format='%.0f').classes('w-1/3').tooltip('Base GRPC Announce Port')
-                            self.monitor_port_input = ui.number('Monitor Port', placeholder='Default', format='%.0f').classes('w-1/3').tooltip('Mapped Monitor Port')
+                            with ui.expansion("Port mapping", icon="lan").classes("w-full flex-1"):
+                                self.grpc_port_input = ui.number('GRPC Port', placeholder='Auto', format='%.0f').classes('w-full').tooltip('Base GRPC Announce Port')
+                                self.monitor_port_input = ui.number('Monitor Port', placeholder='Default', format='%.0f').classes('w-full').tooltip('Mapped Monitor Port')
+                                self.host_port_input = ui.number('Host Port', placeholder='Default', format='%.0f').classes('w-full').tooltip('Mapped Server Host Port (for DHT peer discovery)')
 
                         self.editing_server_name = None
 
@@ -332,6 +337,7 @@ class DistributedGui:
                             self.device_input.value = 'cpu'
                             self.grpc_port_input.value = None
                             self.monitor_port_input.value = None
+                            self.host_port_input.value = None
                             self.editing_server_name = None
                             self.add_btn.text = 'Add Server'
 
@@ -345,7 +351,8 @@ class DistributedGui:
                                 name=self.name_input.value.strip() if self.name_input.value else None,
                                 device=self.device_input.value,
                                 grpc_announce_port=int(self.grpc_port_input.value) if self.grpc_port_input.value else None,
-                                mapped_monitor_port=int(self.monitor_port_input.value) if self.monitor_port_input.value else None
+                                mapped_monitor_port=int(self.monitor_port_input.value) if self.monitor_port_input.value else None,
+                                mapped_host_port=int(self.host_port_input.value) if self.host_port_input.value else None
                             )
 
                             if self.editing_server_name:
@@ -401,6 +408,7 @@ class DistributedGui:
                                     self.device_input.value = server.device
                                     self.grpc_port_input.value = server.grpc_announce_port
                                     self.monitor_port_input.value = server.mapped_monitor_port
+                                    self.host_port_input.value = server.mapped_host_port
 
                                     self.editing_server_name = name
                                     self.add_btn.text = 'Update Server'
@@ -500,7 +508,7 @@ class DistributedGui:
                             async def start_all_workers():
                                 for s in self.controller.state.servers:
                                     try:
-                                        await self.controller.start_worker_nodes([s.display_name], s.num_servers, s.device, s.batch_size, s.grpc_announce_port)
+                                        await self.controller.start_worker_nodes([s.display_name], s.num_servers, s.device, s.batch_size, s.inner_steps, s.grpc_announce_port, s.mapped_host_port)
                                         ui.notify(f"Started worker on {s.display_name}")
                                     except Exception as e:
                                         ui.notify(f"Failed to start {s.display_name}: {e}", type='negative')

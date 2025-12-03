@@ -388,12 +388,12 @@ class Controller:
         if self.status_callback:
             self.status_callback(f"Head node started on {server.display_name}")
 
-    async def start_worker_nodes(self, server_names: List[str], num_servers_per_node: int = 2, device: str = "cpu", batch_size: int = 32, grpc_announce_port: Optional[int] = None):
+    async def start_worker_nodes(self, server_names: List[str], num_servers_per_node: int = 2, device: str = "cpu", batch_size: int = 32, inner_steps: int = 50, grpc_announce_port: Optional[int] = None, host_port: Optional[int] = None):
         """Start worker nodes (servers)."""
         if not self.initial_peers:
             raise RuntimeError("Initial peers not yet received. Start head node first.")
             
-        print(f"Starting worker nodes: {server_names} with {device} batch_size={batch_size} grpc_announce_port={grpc_announce_port}")
+        print(f"Starting worker nodes: {server_names} with {device} batch_size={batch_size} inner_steps={inner_steps} grpc_announce_port={grpc_announce_port} host_port={host_port}")
         for name in server_names:
             print(f"Starting worker node: {name}")
             server = self.get_server(name)
@@ -437,8 +437,11 @@ class Controller:
 
             print(f"Peers arg: {peers_arg}")
             
-            cmd = f"cd {server.remote_root_dir} && source .venv/bin/activate && python start_servers.py --config-path {self.state.last_job_config.config_path} --network-initial-peers {peers_arg} --num-servers {num_servers_per_node} --public-ip {server.hostname} --device {device} --diloco-batch-size-per-step {batch_size}"
+            cmd = f"cd {server.remote_root_dir} && source .venv/bin/activate && python start_servers.py --config-path {self.state.last_job_config.config_path} --network-initial-peers {peers_arg} --num-servers {num_servers_per_node} --public-ip {server.hostname} --device {device} --diloco-batch-size-per-step {batch_size} --diloco-inner-steps {inner_steps}"
             
+            if host_port:
+                cmd += f" --network-server-base-hostport-announce {host_port}"
+
             if grpc_announce_port:
                 cmd += f" --network-server-base-grpc-announceport {grpc_announce_port}"
 

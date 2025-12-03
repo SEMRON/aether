@@ -53,14 +53,17 @@ def get_client_addresses(public_ip: str, network_config: NetworkConfig):
 
 def get_server_addresses(public_ip: str, network_config: NetworkConfig, idx: int = 0):
         hostport = network_config.server_base_hostport + idx
+        hostport_announce = network_config.server_base_hostport_announce + idx
         grpcport = network_config.server_base_grpcport + idx
         grpc_announceport = network_config.server_base_grpc_announceport + idx
 
         listen_on = f"0.0.0.0:{grpcport}"
         announce_endpoint = f"{public_ip}:{grpc_announceport}"
 
+        # host_maddrs uses the local binding port
         hostmaddr_str = f'["/ip4/0.0.0.0/tcp/{hostport}"]'
-        announcemaddr_str = f'["/ip4/{public_ip}/tcp/{hostport}", "/ip4/127.0.0.1/tcp/{hostport}"]'
+        # announce_maddrs uses the mapped/announced port for DHT peer discovery
+        announcemaddr_str = f'["/ip4/{public_ip}/tcp/{hostport_announce}", "/ip4/127.0.0.1/tcp/{hostport}"]'
         
         return hostmaddr_str, announcemaddr_str, listen_on, announce_endpoint
 

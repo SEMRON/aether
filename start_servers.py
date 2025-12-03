@@ -75,7 +75,7 @@ class Orchestrator(BaseOrchestrator):
                 break
 
 @click.command(context_settings={"ignore_unknown_options": True})
-@click.option("--num-servers", type=int, default=2)
+@click.option("--num-servers", type=int, default=1)
 @click.option("--public-ip", type=str, default=None)
 @click.option("--config-path", type=str, default="configs/resnet18.yaml")
 @click.option("--network-initial-peers", type=str, default=None, help="Comma-separated list of initial peers")

@@ -116,35 +116,40 @@ class SwarmClient:
         
 
 
-    def _get_pipeline_batch_size(self, pipeline_info: Dict) -> Optional[int]:
+    def _get_pipeline_batch_size_and_inner_steps(self, pipeline_info: Dict) -> Optional[int]:
         """
-        Determine the batch_size_per_step for a pipeline.
+        Determine the batch_size_per_step and inner_steps for a pipeline.
         
-        If all stages have the same batch_size_per_step, use that.
+        If all stages have the same batch_size_per_step and inner_steps, use that.
         Otherwise, use the first non-None value found, or fall back to config default.
         """
         batch_sizes = []
+        inner_steps = []
         for stage_name, stage_info in pipeline_info.items():
             batch_size = stage_info.get('batch_size_per_step')
+            inner_step = stage_info.get('inner_steps')
             if batch_size is not None:
                 batch_sizes.append(batch_size)
+            if inner_step is not None:
+                inner_steps.append(inner_step)
         
         if not batch_sizes:
             logger.warning("No batch_size_per_step found for pipeline stages, using config default")
-            return self.config.diloco.batch_size_per_step
+            return self.config.diloco.batch_size_per_step, self.config.diloco.inner_steps
         
         # Check if all stages have the same batch size
         unique_batch_sizes = set(batch_sizes)
-        if len(unique_batch_sizes) == 1:
-            return batch_sizes[0]
+        unique_inner_steps = set(inner_steps)
+        if len(unique_batch_sizes) == 1 and len(unique_inner_steps) == 1    :
+            return batch_sizes[0], inner_steps[0]
         else:
             logger.warning(
-                f"Pipeline stages have different batch sizes: {unique_batch_sizes}. "
-                f"Using first value: {batch_sizes[0]}"
+                f"Pipeline stages have different batch sizes: {unique_batch_sizes} and inner steps: {unique_inner_steps}. "
+                f"Using first value: {batch_sizes[0]} and {inner_steps[0]}"
             )
-            return batch_sizes[0]
+            return batch_sizes[0], inner_steps[0]
 
-    def spawn_trainer(self, trainer_id: int, initial_peers: List[str], batch_size_per_step: Optional[int] = None):
+    def spawn_trainer(self, trainer_id: int, initial_peers: List[str], batch_size_per_step: Optional[int] = None, inner_steps: Optional[int] = None):
         """Spawn a trainer process for the given trainer_id"""
         if trainer_id in self.trainer_procs:
             logger.warning(f"Trainer {trainer_id} already exists, skipping spawn")
@@ -165,7 +170,10 @@ class SwarmClient:
             cmd.extend(["--network-announce-maddrs", announcemaddr])
 
         if batch_size_per_step is not None:
-                    cmd.extend(["--diloco-batch-size-per-step", str(batch_size_per_step)])
+            cmd.extend(["--diloco-batch-size-per-step", str(batch_size_per_step)])
+        
+        if inner_steps is not None:
+            cmd.extend(["--diloco-inner-steps", str(inner_steps)])
 
         if self.disable_quant:
             cmd.append("--disable-quant")
@@ -235,9 +243,9 @@ class SwarmClient:
             logger.info(f"Starting trainer for complete pipeline {trainer_id}")
             # Determine batch_size_per_step for this pipeline
             pipeline_info = complete_pipelines[trainer_id]
-            batch_size = self._get_pipeline_batch_size(pipeline_info)
-            logger.info(f"Pipeline {trainer_id} will use batch_size_per_step={batch_size}")
-            self.spawn_trainer(trainer_id, initial_peers, batch_size_per_step=batch_size)
+            batch_size, inner_steps = self._get_pipeline_batch_size_and_inner_steps(pipeline_info)
+            logger.info(f"Pipeline {trainer_id} will use batch_size_per_step={batch_size} and inner_steps={inner_steps}")
+            self.spawn_trainer(trainer_id, initial_peers, batch_size_per_step=batch_size, inner_steps=inner_steps)
         
         # Stop trainers for pipelines that are no longer complete
         for trainer_id in current_trainer_ids - expected_trainer_ids:
@@ -262,9 +270,9 @@ class SwarmClient:
             batch_size = None
             if trainer_id in complete_pipelines:
                 pipeline_info = complete_pipelines[trainer_id]
-                batch_size = self._get_pipeline_batch_size(pipeline_info)
+                batch_size, inner_steps = self._get_pipeline_batch_size_and_inner_steps(pipeline_info)
             self.stop_trainer(trainer_id)
-            self.spawn_trainer(trainer_id, initial_peers, batch_size_per_step=batch_size)
+            self.spawn_trainer(trainer_id, initial_peers, batch_size_per_step=batch_size, inner_steps=inner_steps)
 
 
         
