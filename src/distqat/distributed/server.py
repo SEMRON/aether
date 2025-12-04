@@ -107,6 +107,7 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         optim_kwargs=optim_kwargs,
         min_batch_size=1,
         max_batch_size=cfg.diloco.batch_size_per_step,
+        fp16=cfg.data.precision == "fp16-mixed" or cfg.data.precision == "bf16-mixed",
         quant_config=cfg.quant if not disable_quant else None,
         dht=dht,
         cfg=cfg,

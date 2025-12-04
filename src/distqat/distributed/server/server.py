@@ -219,6 +219,8 @@ class SwarmServer(threading.Thread):
             args_schema = (BatchTensorDescriptor.from_tensor(sample_input, compression),)
 
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if isinstance(device, str):
+            device = torch.device(device)
         # initialize experts
         experts = {}
         for expert_uid in expert_uids:
