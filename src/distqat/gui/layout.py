@@ -4,12 +4,12 @@ from pathlib import Path
 import glob
 from typing import List
 from datetime import datetime
-
 from .config import Server, JobConfig
 from .controller import Controller
 from .ssh_runner import SSHSession
 
 from .machine_setup import create_setup_tab
+
 
 class DistributedGui:
     def __init__(self, no_wandb: bool = False):
@@ -20,11 +20,10 @@ class DistributedGui:
         self.controller.error_callback = self.on_error
         self.controller.error_reset_callback = self.on_error_reset
 
-
         self.log_elements = {}  # server_name -> ui.log
-        self.worker_start_btns = {} # server_name -> ui.button
-        self.worker_status_indicators = {} # server_name -> ui.icon
-        self.detected_errors = [] # List of error dicts
+        self.worker_start_btns = {}  # server_name -> ui.button
+        self.worker_status_indicators = {}  # server_name -> ui.icon
+        self.detected_errors = []  # List of error dicts
 
         self.setup_ui()
         self.refresh_server_list()  # Initial refresh to populate from loaded state
@@ -121,11 +120,11 @@ class DistributedGui:
                     tab = ui.tab(name)
                 with self.log_panels:
                     with ui.tab_panel(tab):
-                        with ui.row().classes('w-full justify-between items-center p-2 bg-gray-50'):
+                        with ui.row().classes('w-full justify-between items-center p-2'):
                             ui.label(f"Session: {name}").classes('font-bold')
                             async def stop_node(n=name):
                                 await self.controller.stop_task(n)
-                            ui.button('Stop Node', on_click=stop_node, color='red-4').classes('text-white px-4')
+                            ui.button('Stop Node', on_click=stop_node, color='negative').classes('text-white px-4')
 
                             self.log_elements[name] = ui.column().classes('w-full h-full font-mono text-sm bg-black text-white p-2 overflow-y-auto gap-0')
 
@@ -192,12 +191,13 @@ class DistributedGui:
                                      sessions = [sid for sid, sess in self.controller.sessions.items() if sess.server.display_name == name]
                                      if not sessions:
                                          ui.notify(f"No active sessions found for {name}", type='warning')
+                                         await self.controller.stop_task(name)
                                          return
                                      for sid in sessions:
                                          await self.controller.stop_task(sid)
                                      ui.notify(f"Stopped workers on {name}")
 
-                                ui.button('Stop', on_click=stop, color='red-4').classes('small')
+                                ui.button('Stop', on_click=stop, color='warning').classes('small')
 
         if hasattr(self, 'server_table'):
             rows = []
@@ -287,7 +287,7 @@ class DistributedGui:
                 self.log_tabs.value = list(self.log_elements.keys())[0]
 
     def setup_ui(self):
-        with ui.header().classes('bg-primary text-white') as header:
+        with ui.header().style('background-color: #121212;') as header:
             self.header = header
             ui.label('DistQAT Control Center').classes('text-h5')
 
@@ -449,7 +449,7 @@ class DistributedGui:
 
                         with ui.row().classes('w-full gap-2'):
                             ui.button('Edit Selected Server', on_click=edit_server, color='primary').classes('flex-1')
-                            ui.button('Delete Selected Server', on_click=delete_server, color='red-4').classes('flex-1')
+                            ui.button('Delete Selected Server', on_click=delete_server, color='warning').classes('flex-1')
 
                         async def test_ssh_conn():
                             if self.server_table.selected:
@@ -479,6 +479,10 @@ class DistributedGui:
                         if self.controller.state.last_job_config.wandb_api_key:
                             wandb_key.value = self.controller.state.last_job_config.wandb_api_key
 
+                        hf_token_input = ui.input('HuggingFace Token', password=True).classes('w-full')
+                        if getattr(self.controller.state.last_job_config, "hf_token", None):
+                            hf_token_input.value = self.controller.state.last_job_config.hf_token
+
                         ui.separator().classes('my-4')
 
                         ui.label('Head Node (Client/Monitor)').classes('text-h6')
@@ -497,7 +501,8 @@ class DistributedGui:
                             async def start_head():
                                 cfg = JobConfig(
                                     config_path=config_select.value,
-                                    wandb_api_key=wandb_key.value
+                                    wandb_api_key=wandb_key.value,
+                                    hf_token=hf_token_input.value or None,
                                 )
                                 await self.controller.start_head_node(self.server_select.value, cfg)
                                 self.update_log_views()
@@ -521,18 +526,18 @@ class DistributedGui:
                                 await self.controller.stop_all()
                                 self.peers_display.content = "Stopped"
 
-                            self.stop_all_btn = ui.button('STOP ALL', on_click=stop_all, color='red-4')
+                            self.stop_all_btn = ui.button('STOP ALL', on_click=stop_all, color='warning')
                             self.stop_all_btn.disable()
 
                         async def reset_all():
                              await self.controller.reset_all_processes()
                              self.peers_display.content = "Reset"
 
-                        ui.button('Reset all processes', on_click=reset_all, color='red-10').classes('text-white w-1/3 mt-2')
+                        ui.button('Reset all processes', on_click=reset_all, color='warning').classes('text-white w-1/3 mt-2')
 
                         ui.label('Initial Peers:').classes('text-lg mt-4 font-bold')
                         with ui.row().classes('w-full items-center gap-2 bg-gray-100 p-2 rounded mb-4'):
-                            self.peers_display = ui.code('Not started').classes('flex-1')
+                            self.peers_display = ui.code('Not started').classes('flex-1 text-white bg-black')
 
 
                         # Update peers label periodically
@@ -561,7 +566,7 @@ class DistributedGui:
                 with ui.card().classes('w-full mb-4 border-l-4 border-red-500'):
                     with ui.row().classes('w-full justify-between items-center'):
                         ui.label('Error Watcher').classes('text-h6 text-red-700')
-                        ui.button('Clear', on_click=lambda: (self.detected_errors.clear(), self.refresh_error_list()), color='grey').classes('small')
+                        ui.button('Clear', on_click=lambda: (self.detected_errors.clear(), self.refresh_error_list())).classes('small')
 
                     self.error_list = ui.column().classes('w-full gap-1 overflow-y-auto max-h-80')
                     self.refresh_error_list()
@@ -610,7 +615,7 @@ class DistributedGui:
                         with self.file_dialog, ui.card().classes('w-3/4 max-w-6xl h-3/4'):
                             with ui.row().classes('w-full justify-between items-center'):
                                 self.file_title = ui.label('File Content').classes('text-h6')
-                                ui.button('Close', on_click=self.file_dialog.close, color='red-4')
+                                ui.button('Close', on_click=self.file_dialog.close, color='warning')
                             self.file_content = ui.column().classes('w-full h-full font-mono text-sm bg-black text-white p-2 overflow-y-auto gap-0')
 
                         self.files_table.add_slot('body-cell-name', r'''
@@ -662,8 +667,7 @@ class DistributedGui:
                         self.wandb_link.props['href'] = "https://wandb.ai"
 
                 ui.timer(2.0, update_wandb_link)
-
-
+            
 
 def init_ui(no_wandb: bool = False):
     DistributedGui(no_wandb)

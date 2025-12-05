@@ -33,6 +33,7 @@ class JobConfig(BaseModel):
     wandb_api_key: Optional[str] = None
     wandb_project: Optional[str] = None
     wandb_entity: Optional[str] = None
+    hf_token: Optional[str] = None
 
 class GlobalState(BaseModel):
     servers: List[Server] = Field(default_factory=list)

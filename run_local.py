@@ -36,7 +36,7 @@ if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ and os.environ["HF_HUB_ENABLE_HF_TR
 
 logger = get_logger(__name__)
 
-DISABLE_QUANT = False
+DISABLE_QUANT = True
 
 class Orchestrator(BaseOrchestrator):
     def __init__(self, config_path: str, public_ip=None, num_servers=1):
@@ -80,7 +80,7 @@ class Orchestrator(BaseOrchestrator):
         print(f"ORCHESTRATOR: Starting to spawn servers")
 
         # Spawn servers
-        for expert_idx in range(self.num_servers):                
+        for expert_idx in range(self.num_servers):
             for stage_idx,  pipeline_step_cfg in enumerate(self.config.model_pipeline.pipeline):
                 _, stage = pipeline_step_cfg.model_name.split(".")
                 proc = run_server_proc(config_path=self.config_path, network_initial_peers=initial_peers_json, public_ip=self.public_ip, idx=expert_idx, stage_index=stage_idx, disable_quant=self.disable_quant)

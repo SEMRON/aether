@@ -311,7 +311,12 @@ class Controller:
         
         # Prepare command
         # Assuming the repo is cloned at remote_root_dir
-        cmd = f"cd {server.remote_root_dir} && source .venv/bin/activate && python start_trainer_client.py --config-path {config.config_path} --public-ip {server.hostname}"
+        env_parts = [f"cd {server.remote_root_dir}", "source .venv/bin/activate"]
+
+        if getattr(config, "hf_token", None):
+            env_parts.append(f"export HF_TOKEN={config.hf_token}")
+
+        cmd = " && ".join(env_parts) + f" && python start_trainer_client.py --config-path {config.config_path} --public-ip {server.hostname}"
         if config.wandb_api_key and not self.no_wandb:
             self.wandb_api = wandb.Api(api_key=config.wandb_api_key)
             cmd = f"export WANDB_API_KEY={config.wandb_api_key} && " + cmd
@@ -436,8 +441,15 @@ class Controller:
                 peers_arg = f"'{clean_peers}'"
 
             print(f"Peers arg: {peers_arg}")
-            
-            cmd = f"cd {server.remote_root_dir} && source .venv/bin/activate && python start_servers.py --config-path {self.state.last_job_config.config_path} --network-initial-peers {peers_arg} --num-servers {num_servers_per_node} --public-ip {server.hostname} --device {device} --diloco-batch-size-per-step {batch_size} --diloco-inner-steps {inner_steps}"
+
+            env_parts = [f"cd {server.remote_root_dir}", "source .venv/bin/activate"]
+            # Optional HuggingFace token (comes from last_job_config)
+            if getattr(self.state.last_job_config, "hf_token", None):
+                env_parts.append(f"export HF_TOKEN={self.state.last_job_config.hf_token}")
+            env_parts.append("export HF_HUB_ENABLE_HF_TRANSFER=0")
+
+            env_prefix = " && ".join(env_parts)
+            cmd = f"{env_prefix} && python start_servers.py --config-path {self.state.last_job_config.config_path} --network-initial-peers {peers_arg} --num-servers {num_servers_per_node} --public-ip {server.hostname} --device {device} --diloco-batch-size-per-step {batch_size} --diloco-inner-steps {inner_steps}"
             
             if host_port:
                 cmd += f" --network-server-base-hostport-announce {host_port}"
