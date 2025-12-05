@@ -53,7 +53,7 @@ class Wav2Vec2Full(nn.Module):
         self.config = AutoConfig.from_pretrained(full_model_name)
         self.config.ctc_loss_reduction = "mean"
         self.config.gradient_checkpointing = False
-        self.model = AutoModelForCTC(self.config)
+        self.model = AutoModelForCTC.from_config(self.config)
 
     def forward(self, input_values: torch.Tensor):
         outputs = self.model(input_values)
@@ -67,7 +67,7 @@ class Wav2Vec2Head(nn.Module):
         super().__init__()
         config = AutoConfig.from_pretrained(full_model_name)
         config.gradient_checkpointing = False
-        self.model = AutoModelForCTC(config)
+        self.model = AutoModelForCTC.from_config(config)
         self.feature_extractor = self.model.wav2vec2.feature_extractor
         self.feature_extractor._requires_grad = False
         self.feature_projection = self.model.wav2vec2.feature_projection
@@ -89,7 +89,7 @@ class Wav2Vec2Body(nn.Module):
         super().__init__()
         config = AutoConfig.from_pretrained(full_model_name)
         config.gradient_checkpointing = False
-        self.model = AutoModelForCTC(config)
+        self.model = AutoModelForCTC.from_config(config)
         full_encoder = self.model.wav2vec2.encoder
         self.blocks = full_encoder.layers[idx:idx + n_layers]
 
@@ -105,7 +105,7 @@ class Wav2Vec2Tail(nn.Module):
         super().__init__()
         config = AutoConfig.from_pretrained(full_model_name)
         config.gradient_checkpointing = False
-        self.model = AutoModelForCTC(config)
+        self.model = AutoModelForCTC.from_config(config)
         full_encoder = self.model.wav2vec2.encoder
         self.blocks = full_encoder.layers[idx:]
         self.dropout = self.model.dropout
