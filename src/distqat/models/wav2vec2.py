@@ -54,6 +54,7 @@ class Wav2Vec2Full(nn.Module):
         self.config.ctc_loss_reduction = "mean"
         self.config.gradient_checkpointing = False
         self.model = AutoModelForCTC.from_config(self.config)
+        self.model.wav2vec2.feature_extractor._requires_grad = False
 
     def forward(self, input_values: torch.Tensor):
         outputs = self.model(input_values)

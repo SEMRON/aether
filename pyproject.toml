@@ -17,6 +17,7 @@ dependencies = [
   "hivemind @ git+https://github.com/learning-at-home/hivemind.git@937198fd364d20edeafd1044b12c3b88521d7701",
   "nicegui",
   "asyncssh",
+  "torchcodec",
 ]
 authors = [
   { name = "SEMRON" },
@@ -29,9 +30,10 @@ docs = [
   "sphinxcontrib-mermaid>=0.9,<1.0",
 ]
 gpuspecific = [
-  "torch",
+  "torch>=2.9",
   "torchvision",
   "torchaudio",
+  "torchcodec",
 ]
 
 [tool.setuptools.packages.find]
