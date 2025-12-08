@@ -52,6 +52,7 @@ def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[
         inner_optimizer=get_optimizer_factory(config.inner_optim),
         num_inner_steps=config.inner_steps,
         batch_size_per_step=config.batch_size_per_step,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
         min_refresh_period=config.min_refresh_period,
         max_refresh_period=config.max_refresh_period,
         default_refresh_period=config.default_refresh_period,

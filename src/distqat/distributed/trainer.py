@@ -72,6 +72,14 @@ class SwarmTrainer:
         self.shm_client = DataClient(host=self.config.data_server.ipc_host, port=int(self.config.data_server.ipc_port), authkey=self.config.data_server.ipc_key.encode())
 
         self.batch_size = self.config.diloco.batch_size_per_step
+        self.gradient_accumulation_steps = self.config.diloco.gradient_accumulation_steps
+        
+        effective_batch = self.batch_size * self.gradient_accumulation_steps
+        logger.info(f"Trainer configured with:")
+        logger.info(f"  - Micro-batch size: {self.batch_size}")
+        logger.info(f"  - Accumulation steps: {self.gradient_accumulation_steps}")
+        logger.info(f"  - Effective batch size: {effective_batch}")
+        
         self.remaining_batch = None
         self.remaining_release = None
 
@@ -93,6 +101,8 @@ class SwarmTrainer:
                 reduction="none",
             )
             loss = loss.mean()
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.warning(f"Found {loss.item()} loss in llm task!")
             return loss
         elif self.config.data.task_type == "speech":
             attention_mask = torch.ones_like(inputs, dtype=torch.long)
@@ -161,14 +171,24 @@ class SwarmTrainer:
                 pass
         
         if inner_step % 10 == 0:
-            logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps}")
+            logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
             logger.info(f"Batch size: {inputs.shape}")
         
         outputs = self.model(inputs)
 
         loss = self.task_type_loss(inputs, outputs, labels)
+        loss = loss / self.gradient_accumulation_steps
+        
         loss.backward()
-        self.model.post_optimizer_callback(step, loss.item())
+        
+        # Only step optimizer if we have accumulated enough gradients
+        if self.use_baseline_model:
+            # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
+            if (inner_step + 1) % self.gradient_accumulation_steps == 0:
+                self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
+        else:
+            # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
+            self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
 
     def train(self):
         logger.info(f"============= Training for {self.num_total_steps} steps =============")
@@ -231,10 +251,12 @@ class SwarmTrainer:
             # Inner loop: exactly inner_steps batches for this peer
             inner = 0
 
-            while inner < inner_steps:
+            while inner < inner_steps*self.gradient_accumulation_steps:
                 self.step(inner_step=inner, step=step)
                 
-                step += 1
+                # Only increment global step (optimizer step) when we actually stepped
+                if (inner + 1) % self.gradient_accumulation_steps == 0:
+                    step += 1
                 inner += 1
                 if step >= self.num_total_steps:
                     break

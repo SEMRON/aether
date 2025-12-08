@@ -71,6 +71,7 @@ class DilocoConfig(BaseModel):
     inner_steps: int = 50
     outer_steps: int = 10
     batch_size_per_step: int = 64
+    gradient_accumulation_steps: int = 1
     min_refresh_period: float = 0.5
     max_refresh_period: float = 30
     default_refresh_period: float = 3
