@@ -266,6 +266,7 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
         run_id: str,
         num_inner_steps: int,
         batch_size_per_step: Optional[int] = None,
+        gradient_accumulation_steps: int = 1,
         scheduler: Optional[LRSchedulerBase] = None,
         min_refresh_period: float = 0.5,
         max_refresh_period: float = 30,
@@ -281,13 +282,14 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
         accumulate_grads_on: Optional[torch.device] = None,
         client_mode: bool = False,
         verbose: bool = False,
+        expert: Optional[torch.nn.Module] = None,
         **kwargs,
     ):
         # convert params to list to provide params to both optimizers
         params_list = list(params)
     
         if isinstance(inner_optimizer, Callable):
-            inner_optimizer = inner_optimizer(params=params_list)
+            inner_optimizer = inner_optimizer(params=params_list, expert=expert) if expert is not None else inner_optimizer(params=params_list)
         if isinstance(outer_optimizer, Callable):
             self.outer_optimizer = outer_optimizer(params=params_list)
 
@@ -301,6 +303,7 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
             logger.warning("Setting 'accumulate_grads_on' has no effect if reuse_grad_buffers=True")
         self.run_id, self.scheduler = run_id, scheduler
         self.num_inner_steps, self.batch_size_per_step = num_inner_steps, batch_size_per_step
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.min_refresh_period, self.max_refresh_period, self.default_refresh_period = (
             min_refresh_period,
             max_refresh_period,
@@ -317,6 +320,7 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
 
         self.training_progress_key = f"{self.run_id}_progress"
         self.inner_step = 0  # number of inner steps since last outer step
+        self.steps_accumulated = 0
         self.performance_ema = PerformanceEMA(alpha=performance_ema_alpha)
         self.last_step_time = None
 
@@ -387,6 +391,9 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
             logger.log(self.status_loglevel, f"Setting default batch_size_per_step to {batch_size}")
             self.batch_size_per_step = batch_size
         batch_size = batch_size if batch_size is not None else self.batch_size_per_step
+        self.steps_accumulated += 1
+        if self.steps_accumulated % self.gradient_accumulation_steps != 0:
+            return
 
         if not self.is_synchronized:
             logger.log(self.status_loglevel, "Peer is out of sync.")

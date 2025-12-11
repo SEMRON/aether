@@ -42,9 +42,12 @@ class RemoteModel(torch.nn.Module):
             )
             self.model_pipeline.append(pipeline_step)
 
-    def forward(self, x):
+    def forward(self, x, labels=None):
         for pipeline_step in self.model_pipeline:
-            x = pipeline_step(x)
+            if labels is not None:
+                x = pipeline_step(x, labels)
+            else:
+                x = pipeline_step(x)
         return x
 
     def shutdown(self):
@@ -54,6 +57,9 @@ class RemoteModel(torch.nn.Module):
     def parameters(self):
         raise NotImplementedError("RemoteModel does not have parameters")
 
+    def evaluate(self, step):
+        """Not implemented for RemoteModel"""
+        pass
 
 class BaselineModel(torch.nn.Module):
     def __init__(self, config: Config):
@@ -63,10 +69,19 @@ class BaselineModel(torch.nn.Module):
             pipeline_step = get_model(config, pipeline_step_cfg)
             self.model_pipeline.append(pipeline_step)
 
-    def forward(self, x):
+    def forward(self, x, labels=None):
         for pipeline_step in self.model_pipeline:
-            x = pipeline_step(x)
+            if labels is not None:
+                x = pipeline_step(x, labels)
+            else:
+                x = pipeline_step(x)
         return x
+
+    def evaluate(self, step):
+        """Evaluate the model every eval_every steps"""
+        for pipeline_step in self.model_pipeline:
+            if hasattr(pipeline_step, 'evaluate'):
+                pipeline_step.evaluate(step)
 
 class SwarmModel(torch.nn.Module):
     """
@@ -135,8 +150,13 @@ class SwarmModel(torch.nn.Module):
     def parameters(self):
         yield from self.model.parameters()
 
-    def forward(self, x):
+    def forward(self, x, labels=None):
+        if labels is not None:
+            return self.model(x, labels)
         return self.model(x)
+    
+    def evaluate(self, step):
+        pass
     
     def post_optimizer_callback(self, global_step, loss):
         self.metrics_logger.on_step_end(global_step, loss)
@@ -185,6 +205,7 @@ class SwarmBaselineModel(torch.nn.Module):
         self.optimizer = optimizer_cls(
             params=model.parameters(),
             avg_only_params=avg_only_params,
+            expert=model.model_pipeline[0] if config.model_pipeline.pipeline[0].model_name == "biggan.full" else None,
             dht=self.dht,
             **optimizer_kwargs,
         )
@@ -210,12 +231,19 @@ class SwarmBaselineModel(torch.nn.Module):
         except Exception as e:
             logger.warning(f"Error shutting down DHT: {e}")
 
-    def forward(self, x):
-        x_device = x.device
-        x = x.to(self.device)
-        y = self.model(x)
-        y = y.to(x_device)
+    def forward(self, x, labels= None):
+        if labels is None:
+            x_device = x.device
+            x = x.to(self.device)
+            y = self.model(x, labels)
+            y = y.to(x_device)
+        else:
+            y = self.model(x, labels)
         return y
+
+    def evaluate(self, step):
+        """Evaluate the model every eval_every steps"""
+        self.model.evaluate(step)
 
     def post_optimizer_callback(self, global_step, loss):
         self.optimizer.step()

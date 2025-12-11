@@ -838,317 +838,320 @@ def create_setup_tab(tab) -> SetupTabHandle:
             return mode_toggle.value == 'simplified'
 
         ui.label("System setup configuration").classes("text-h5")
-        main_desc_label = ui.label(
-            "Generate setup scripts or configuration for target machines from either a full config "
-            "JSON or machine info JSON. This is a GUI wrapper around the same core logic as the "
-            "command-line tool."
-        ).classes("text-body2 text-grey-7")
-
-        # Info card for simplified mode
-        preset_info_card = ui.card().classes("w-full q-mt-md border-l-4 border-blue-500")
-        with preset_info_card:
-            with ui.row().classes("w-full items-start"):
-                with ui.column().classes("flex-grow"):
-                    ui.label("ℹ️ Auto-configured from selected server").classes("text-subtitle1 text-blue-700")
-                    ui.label(
-                        "The information in this UI was automatically updated to match the server you selected. "
-                        "The configuration is currently locked to prevent accidental changes. "
-                        "(assuming you set the information correctly in the \"SERVERS\" tab)"
-                    ).classes("text-body2 text-grey-7")
-                    ui.label(
-                        "Proceed straight to the bottom to generate the server setup script, and run it on the server."
-                    ).classes("text-body2 font-weight-medium q-mt-sm")
-                ui.button("Unlock Configuration", on_click=unlock_from_preset, icon="lock_open").props("flat")
-        preset_info_card.visible = False
-
-        # SSH task blocking card
-        ssh_block_card = ui.card().classes("w-full q-mt-md border-l-4 border-orange-500")
-        with ssh_block_card:
-            with ui.row().classes("w-full items-center"):
-                ui.spinner(size='sm').classes("q-mr-sm")
-                with ui.column().classes("flex-grow"):
-                    ui.label("⚠️ SSH task is running").classes("text-subtitle1 text-orange-700")
-                    ui.label(
-                        "Configuration is locked while an SSH task is executing. "
-                        "Please wait for it to complete or click 'Override' to unlock."
-                    ).classes("text-body2 text-grey-7")
-                ui.button("Override", on_click=override_ssh_block, icon="block").props("flat")
-        ssh_block_card.visible = False
-
-        # ------------------------------------------------------------------
-        # Panel 1: Base configuration / machine info
-        # ------------------------------------------------------------------
-        base_config_card = ui.card().classes("w-full q-mt-md")
-        with base_config_card:
-            base_title_label = ui.label("Lorem Ipsum").classes("text-subtitle1")
-            base_desc_label = ui.label("Lorem Ipsum").classes("text-body2 text-grey-7")
-
-            # -------------------- Config JSON ------------------------------
-            config_title_label = ui.label("Lorem Ipsum").classes("text-body1 q-mt-md")
-            config_help_label = ui.label("Lorem Ipsum").classes("text-body2 text-grey-7")
-
-            with ui.row().classes("items-center q-gutter-md q-mt-sm"):
-                config_json_ui = create_json_source_ui(
-                    choose_label="Choose config JSON file",
-                    paste_button_label="Paste config JSON",
-                    paste_dialog_title="Paste config JSON",
-                    status_initial="No config loaded yet.",
-                    temp_prefix="config_",
-                    sample_files=get_setup_configs(),
-                    sample_files_label="Sample Configs",
-                    on_value_changed=lambda: reset_output(from_sample_change=True) if not ui_blocked_by_ssh else None
-                )
-
-            # -------------------- Machine info JSON -------------------------
-            and_or_row = ui.row().classes("q-my-md items-center w-full items-center")
-            with and_or_row:
-                ui.separator()
-                ui.label("AND / OR").classes("text-body2 text-grey-7 px-2")
-                ui.separator()
-
-            machine_info_section = ui.column().classes("w-full")
-            with machine_info_section:
-                ui.label("Machine info JSON (optional)").classes("text-body1")
-                # -------------------- Reference script --------------------------
-                with ui.card().classes("w-full q-mt-md border-l-4 border-gray-400"):
-                    ui.label("Reference machine info script").classes("text-body1")
-                    ui.label(
-                        "This is a bash script you can run in any shell on a target machine.\n"
-                        "It automatically gets the target machine hardware and software configuration, and generates a \"machine info\" json string.\n"
-                        "You can then insert that \"machine info\" below, to auto configure many aspects of the installation.\n"
-                        "(or replecate e.g. the user, in case of generating a cloud_init)"
-                    ).classes("text-body2 text-grey-7")
-
-                    try:
-                        reference_script_text = GET_MACHINE_INFO_SCRIPT.read_text()
-                    except Exception as ex:
-                        reference_script_text = f"# Failed to read script: {ex}"
-
-                    script_dialog = ui.dialog()
-
-                    with script_dialog, ui.card().classes("w-[800px]"):
-                        ui.label("get-initial-machine-info.sh").classes("text-subtitle1")
-                        ui.code(reference_script_text, language="bash").classes("w-full")
-                        with ui.row().classes("justify-end q-gutter-sm q-mt-sm"):
-                            ui.button("Close", on_click=script_dialog.close)
-
-                    with ui.row().classes("q-mt-xs q-gutter-sm"):
-                        def _copy_script_to_clipboard() -> None:
-                            ui.run_javascript(
-                                f"navigator.clipboard.writeText({json.dumps(reference_script_text)})"
-                            )
-                            ui.notify("Script copied to clipboard.", type="positive")
-
-                        ui.button("Copy script to clipboard", on_click=_copy_script_to_clipboard)
-                        ui.button("View script", on_click=script_dialog.open)
-
-                ui.label(
-                    "Machine info JSON is obtained by running the reference machine info script on the "
-                    "target machine. It is used to infer a matching config when no full config is given."
+        
+        with ui.expansion("Configuration", icon="settings").classes("w-full mb-4"):
+            with ui.column().classes("w-full gap-2 p-1"):
+                main_desc_label = ui.label(
+                    "Generate setup scripts or configuration for target machines from either a full config "
+                    "JSON or machine info JSON. This is a GUI wrapper around the same core logic as the "
+                    "command-line tool."
                 ).classes("text-body2 text-grey-7")
 
+                # Info card for simplified mode
+                preset_info_card = ui.card().classes("w-full q-mt-md border-l-4 border-blue-500")
+                with preset_info_card:
+                    with ui.row().classes("w-full items-start"):
+                        with ui.column().classes("flex-grow"):
+                            ui.label("ℹ️ Auto-configured from selected server").classes("text-subtitle1 text-blue-700")
+                            ui.label(
+                                "The information in this UI was automatically updated to match the server you selected. "
+                                "The configuration is currently locked to prevent accidental changes. "
+                                "(assuming you set the information correctly in the \"SERVERS\" tab)"
+                            ).classes("text-body2 text-grey-7")
+                            ui.label(
+                                "Proceed straight to the bottom to generate the server setup script, and run it on the server."
+                            ).classes("text-body2 font-weight-medium q-mt-sm")
+                        ui.button("Unlock Configuration", on_click=unlock_from_preset, icon="lock_open").props("flat")
+                preset_info_card.visible = False
 
-                with ui.row().classes("items-center q-gutter-md q-mt-sm"):
-                    machine_info_json_ui = create_json_source_ui(
-                        choose_label="Choose machine info JSON file",
-                        paste_button_label="Paste machine info JSON",
-                        paste_dialog_title="Paste machine info JSON",
-                        status_initial="No machine info provided",
-                        temp_prefix="machine_info_",
-                        on_value_changed=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                # SSH task blocking card
+                ssh_block_card = ui.card().classes("w-full q-mt-md border-l-4 border-orange-500")
+                with ssh_block_card:
+                    with ui.row().classes("w-full items-center"):
+                        ui.spinner(size='sm').classes("q-mr-sm")
+                        with ui.column().classes("flex-grow"):
+                            ui.label("⚠️ SSH task is running").classes("text-subtitle1 text-orange-700")
+                            ui.label(
+                                "Configuration is locked while an SSH task is executing. "
+                                "Please wait for it to complete or click 'Override' to unlock."
+                            ).classes("text-body2 text-grey-7")
+                        ui.button("Override", on_click=override_ssh_block, icon="block").props("flat")
+                ssh_block_card.visible = False
+
+                # ------------------------------------------------------------------
+                # Panel 1: Base configuration / machine info
+                # ------------------------------------------------------------------
+                base_config_card = ui.card().classes("w-full q-mt-md")
+                with base_config_card:
+                    base_title_label = ui.label("Lorem Ipsum").classes("text-subtitle1")
+                    base_desc_label = ui.label("Lorem Ipsum").classes("text-body2 text-grey-7")
+
+                    # -------------------- Config JSON ------------------------------
+                    config_title_label = ui.label("Lorem Ipsum").classes("text-body1 q-mt-md")
+                    config_help_label = ui.label("Lorem Ipsum").classes("text-body2 text-grey-7")
+
+                    with ui.row().classes("items-center q-gutter-md q-mt-sm"):
+                        config_json_ui = create_json_source_ui(
+                            choose_label="Choose config JSON file",
+                            paste_button_label="Paste config JSON",
+                            paste_dialog_title="Paste config JSON",
+                            status_initial="No config loaded yet.",
+                            temp_prefix="config_",
+                            sample_files=get_setup_configs(),
+                            sample_files_label="Sample Configs",
+                            on_value_changed=lambda: reset_output(from_sample_change=True) if not ui_blocked_by_ssh else None
+                        )
+
+                    # -------------------- Machine info JSON -------------------------
+                    and_or_row = ui.row().classes("q-my-md items-center w-full items-center")
+                    with and_or_row:
+                        ui.separator()
+                        ui.label("AND / OR").classes("text-body2 text-grey-7 px-2")
+                        ui.separator()
+
+                    machine_info_section = ui.column().classes("w-full")
+                    with machine_info_section:
+                        ui.label("Machine info JSON (optional)").classes("text-body1")
+                        # -------------------- Reference script --------------------------
+                        with ui.card().classes("w-full q-mt-md border-l-4 border-gray-400"):
+                            ui.label("Reference machine info script").classes("text-body1")
+                            ui.label(
+                                "This is a bash script you can run in any shell on a target machine.\n"
+                                "It automatically gets the target machine hardware and software configuration, and generates a \"machine info\" json string.\n"
+                                "You can then insert that \"machine info\" below, to auto configure many aspects of the installation.\n"
+                                "(or replecate e.g. the user, in case of generating a cloud_init)"
+                            ).classes("text-body2 text-grey-7")
+
+                            try:
+                                reference_script_text = GET_MACHINE_INFO_SCRIPT.read_text()
+                            except Exception as ex:
+                                reference_script_text = f"# Failed to read script: {ex}"
+
+                            script_dialog = ui.dialog()
+
+                            with script_dialog, ui.card().classes("w-[800px]"):
+                                ui.label("get-initial-machine-info.sh").classes("text-subtitle1")
+                                ui.code(reference_script_text, language="bash").classes("w-full")
+                                with ui.row().classes("justify-end q-gutter-sm q-mt-sm"):
+                                    ui.button("Close", on_click=script_dialog.close)
+
+                            with ui.row().classes("q-mt-xs q-gutter-sm"):
+                                def _copy_script_to_clipboard() -> None:
+                                    ui.run_javascript(
+                                        f"navigator.clipboard.writeText({json.dumps(reference_script_text)})"
+                                    )
+                                    ui.notify("Script copied to clipboard.", type="positive")
+
+                                ui.button("Copy script to clipboard", on_click=_copy_script_to_clipboard)
+                                ui.button("View script", on_click=script_dialog.open)
+
+                        ui.label(
+                            "Machine info JSON is obtained by running the reference machine info script on the "
+                            "target machine. It is used to infer a matching config when no full config is given."
+                        ).classes("text-body2 text-grey-7")
+
+
+                        with ui.row().classes("items-center q-gutter-md q-mt-sm"):
+                            machine_info_json_ui = create_json_source_ui(
+                                choose_label="Choose machine info JSON file",
+                                paste_button_label="Paste machine info JSON",
+                                paste_dialog_title="Paste machine info JSON",
+                                status_initial="No machine info provided",
+                                temp_prefix="machine_info_",
+                                on_value_changed=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                            )
+
+                        # -------------------- For this machine --------------------------
+                        for_this_machine_checkbox = ui.checkbox(
+                            "For this machine (run local get-initial-machine-info.sh)",
+                            on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                        )
+
+                # ------------------------------------------------------------------
+                # Panel 2: Source repository
+                # ------------------------------------------------------------------
+                source_repo_card = ui.card().classes("w-full q-mt-md")
+                with source_repo_card:
+                    source_repo_title = ui.label("2. Source repository (optional overrides)").classes("text-subtitle1")
+                    source_repo_desc = ui.label(
+                        "Override the source repository URL and ref if needed. If left empty, the tool "
+                        "uses values from the config or, as a fallback, the upstream of the current repo."
+                    ).classes("text-body2 text-grey-7")
+
+                    source_url_input = _style_wide(
+                        ui.input("Source URL (--source-url, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
+                    )
+                    source_ref_input = _style_wide(
+                        ui.input("Source ref (--source-ref, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
+                    )
+                    sources_target_dir_input = _style_wide(
+                        ui.input("Sources target dir (--sources-target-dir, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
                     )
 
-                # -------------------- For this machine --------------------------
-                for_this_machine_checkbox = ui.checkbox(
-                    "For this machine (run local get-initial-machine-info.sh)",
-                    on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
-                )
+                # ------------------------------------------------------------------
+                # Panel 3.1: Repository access
+                # ------------------------------------------------------------------
+                clone_key_card = ui.card().classes("w-full q-mt-md")
+                with clone_key_card:
+                    ui.label("3.1. Repository access").classes("text-subtitle1")
+                    ui.label(
+                        "Specify SSH key used to access private repositories. Path is "
+                        "interpreted on the machine running this UI."
+                    ).classes("text-body2 text-grey-7")
 
-        # ------------------------------------------------------------------
-        # Panel 2: Source repository
-        # ------------------------------------------------------------------
-        source_repo_card = ui.card().classes("w-full q-mt-md")
-        with source_repo_card:
-            source_repo_title = ui.label("2. Source repository (optional overrides)").classes("text-subtitle1")
-            source_repo_desc = ui.label(
-                "Override the source repository URL and ref if needed. If left empty, the tool "
-                "uses values from the config or, as a fallback, the upstream of the current repo."
-            ).classes("text-body2 text-grey-7")
+                    clone_key_input = _style_wide(
+                        ui.input("Clone key path (--clone-key, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
+                    )
 
-            source_url_input = _style_wide(
-                ui.input("Source URL (--source-url, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
-            source_ref_input = _style_wide(
-                ui.input("Source ref (--source-ref, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
-            sources_target_dir_input = _style_wide(
-                ui.input("Sources target dir (--sources-target-dir, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
+                # ------------------------------------------------------------------
+                # Panel 3.2.: SSH keys and machine access
+                # ------------------------------------------------------------------
+                ssh_card = ui.card().classes("w-full q-mt-md")
+                with ssh_card:
+                    ui.label("3.2. SSH keys and machine access").classes("text-subtitle1")
+                    ui.label(
+                        "Configure SSH keys for accessing target machines. Paths are "
+                        "interpreted on the machine running this UI."
+                    ).classes("text-body2 text-grey-7")
 
-        # ------------------------------------------------------------------
-        # Panel 3.1: Repository access
-        # ------------------------------------------------------------------
-        clone_key_card = ui.card().classes("w-full q-mt-md")
-        with clone_key_card:
-            ui.label("3.1. Repository access").classes("text-subtitle1")
-            ui.label(
-                "Specify SSH key used to access private repositories. Path is "
-                "interpreted on the machine running this UI."
-            ).classes("text-body2 text-grey-7")
-
-            clone_key_input = _style_wide(
-                ui.input("Clone key path (--clone-key, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
-
-        # ------------------------------------------------------------------
-        # Panel 3.2.: SSH keys and machine access
-        # ------------------------------------------------------------------
-        ssh_card = ui.card().classes("w-full q-mt-md")
-        with ssh_card:
-            ui.label("3.2. SSH keys and machine access").classes("text-subtitle1")
-            ui.label(
-                "Configure SSH keys for accessing target machines. Paths are "
-                "interpreted on the machine running this UI."
-            ).classes("text-body2 text-grey-7")
-
-            authorized_key_file_input = _style_wide(
-                ui.input("Authorized key file path (--authorized-key-file, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
-            forward_authorized_checkbox = ui.checkbox(
-                "Forward local ~/.ssh/authorized_keys (--forward-authorized-keys)",
-                on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
-            )
-            ui.label(
-                "Here you can specify a path where to create (or re-use, if already created) "
-                "a private key, which will be added to the authorized keys."
-            )
-            local_private_key_input = _style_wide(
-                ui.input("Local private key path (--local-private-key, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
-            ui.label(
-                "Additional authorized keys to add (one per line)"
-            ).classes("text-body2 text-grey-7 q-mt-md")
-            authorized_keys_textarea = ui.textarea(
-                "Authorized keys (--authorized-keys, one per line, optional)",
-                on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
-            ).props("rows=3").classes("w-full")
-
-        # ------------------------------------------------------------------
-        # Panel 4: Users (separate card)
-        # ------------------------------------------------------------------
-        users_card = ui.card().classes("w-full q-mt-md")
-        with users_card:
-            ui.label("4. Users").classes("text-subtitle1")
-            users_desc_label = ui.label(
-                "Configure the main service user and optional management user."
-            ).classes("text-body2 text-grey-7")
-
-            user_input = _style_wide(
-                ui.input("User name (--user, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
-            management_user_input = _style_wide(
-                ui.input("Management user (--management-user, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
-            )
-
-        # ------------------------------------------------------------------
-        # Panel 5: Accelerator drivers (separate card)
-        # ------------------------------------------------------------------
-        accel_card = ui.card().classes("w-full q-mt-md")
-        with accel_card:
-            ui.label("5. Accelerator drivers").classes("text-subtitle1")
-            ui.label(
-                "Configure GPU/accelerator vendor and driver installation behavior."
-            ).classes("text-body2 text-grey-7")
-
-            gpu_vendor_select = _style_wide(
-                ui.select(
-                    {None: "Auto", **{v.vendor_name: v.vendor_name for v in GPU_VENDOR}},
-                    label="GPU vendor (--gpu-vendor, optional)",
-                    with_input=False,
-                    on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
-                )
-            )
-
-            def update_gpu_vendor_for_mode():
-                if is_simplified():
-                    # In simplified mode, don't allow Auto
-                    options = {v.vendor_name: v.vendor_name for v in GPU_VENDOR}
-                    # If currently set to Auto (None), switch to NO
-                    if gpu_vendor_select.value is None:
-                        gpu_vendor_select.value = GPU_VENDOR.NO.vendor_name
-                    gpu_vendor_select.options = options
-                else:
-                    # In full mode, allow Auto
-                    gpu_vendor_select.options = {None: "Auto", **{v.vendor_name: v.vendor_name for v in GPU_VENDOR}}
-
-            # Initialize the GPU vendor select based on initial mode
-            update_gpu_vendor_for_mode()
-
-            install_drivers_select = _style_wide(
-                ui.select(
-                    {
-                        "auto": "auto (detect)",
-                        "yes": "yes",
-                        "no": "no",
-                    },
-                    label="Install drivers (--install-drivers)",
-                    value="auto",
-                    with_input=False,
-                    on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
-                )
-            )
-
-        # ------------------------------------------------------------------
-        # Panel 6: Post-setup commands
-        # ------------------------------------------------------------------
-        post_commands_card = ui.card().classes("w-full q-mt-md")
-        with post_commands_card:
-            ui.label("6. Post-setup commands (optional)").classes("text-subtitle1")
-            ui.label(
-                "Commands to run after setup completes (as the configured user, in the cloned "
-                "repository directory). One command per line."
-            ).classes("text-body2 text-grey-7")
-
-            commands_textarea = ui.textarea(
-                "Commands (one per line, optional)",
-                on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
-            ).props("rows=4").classes("w-full")
-
-        # ------------------------------------------------------------------
-        # Panel 7: Target and profile
-        # ------------------------------------------------------------------
-        target_profile_card = ui.card().classes("w-full q-mt-md")
-        with target_profile_card:
-            ui.label("7. Output target and profile").classes("text-subtitle1")
-            ui.label(
-                "Select the type of output to generate (cloud-init, bash script, directory with "
-                "runner, etc.) and which setup profile to apply."
-            ).classes("text-body2 text-grey-7")
-
-            with ui.row().classes("items-center q-gutter-md q-mt-sm"):
-                target_select = _style_wide(
-                    ui.select(
-                        {t.name.lower(): t.name for t in _gui_available_targets},
-                        label="Export target (--target)",
-                        with_input=False,
-                        value="bash_script",  # default
+                    authorized_key_file_input = _style_wide(
+                        ui.input("Authorized key file path (--authorized-key-file, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
+                    )
+                    forward_authorized_checkbox = ui.checkbox(
+                        "Forward local ~/.ssh/authorized_keys (--forward-authorized-keys)",
                         on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
                     )
-                )
-                profile_select = _style_wide(
-                    ui.select(
-                        {p.name.lower(): p.name for p in SetupProfile},
-                        label="Profile (--profile)",
-                        value="full_setup",
-                        with_input=False,
+                    ui.label(
+                        "Here you can specify a path where to create (or re-use, if already created) "
+                        "a private key, which will be added to the authorized keys."
+                    )
+                    local_private_key_input = _style_wide(
+                        ui.input("Local private key path (--local-private-key, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
+                    )
+                    ui.label(
+                        "Additional authorized keys to add (one per line)"
+                    ).classes("text-body2 text-grey-7 q-mt-md")
+                    authorized_keys_textarea = ui.textarea(
+                        "Authorized keys (--authorized-keys, one per line, optional)",
+                        on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                    ).props("rows=3").classes("w-full")
+
+                # ------------------------------------------------------------------
+                # Panel 4: Users (separate card)
+                # ------------------------------------------------------------------
+                users_card = ui.card().classes("w-full q-mt-md")
+                with users_card:
+                    ui.label("4. Users").classes("text-subtitle1")
+                    users_desc_label = ui.label(
+                        "Configure the main service user and optional management user."
+                    ).classes("text-body2 text-grey-7")
+
+                    user_input = _style_wide(
+                        ui.input("User name (--user, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
+                    )
+                    management_user_input = _style_wide(
+                        ui.input("Management user (--management-user, optional)", on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None)
+                    )
+
+                # ------------------------------------------------------------------
+                # Panel 5: Accelerator drivers (separate card)
+                # ------------------------------------------------------------------
+                accel_card = ui.card().classes("w-full q-mt-md")
+                with accel_card:
+                    ui.label("5. Accelerator drivers").classes("text-subtitle1")
+                    ui.label(
+                        "Configure GPU/accelerator vendor and driver installation behavior."
+                    ).classes("text-body2 text-grey-7")
+
+                    gpu_vendor_select = _style_wide(
+                        ui.select(
+                            {None: "Auto", **{v.vendor_name: v.vendor_name for v in GPU_VENDOR}},
+                            label="GPU vendor (--gpu-vendor, optional)",
+                            with_input=False,
+                            on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                        )
+                    )
+
+                    def update_gpu_vendor_for_mode():
+                        if is_simplified():
+                            # In simplified mode, don't allow Auto
+                            options = {v.vendor_name: v.vendor_name for v in GPU_VENDOR}
+                            # If currently set to Auto (None), switch to NO
+                            if gpu_vendor_select.value is None:
+                                gpu_vendor_select.value = GPU_VENDOR.NO.vendor_name
+                            gpu_vendor_select.options = options
+                        else:
+                            # In full mode, allow Auto
+                            gpu_vendor_select.options = {None: "Auto", **{v.vendor_name: v.vendor_name for v in GPU_VENDOR}}
+
+                    # Initialize the GPU vendor select based on initial mode
+                    update_gpu_vendor_for_mode()
+
+                    install_drivers_select = _style_wide(
+                        ui.select(
+                            {
+                                "auto": "auto (detect)",
+                                "yes": "yes",
+                                "no": "no",
+                            },
+                            label="Install drivers (--install-drivers)",
+                            value="auto",
+                            with_input=False,
+                            on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                        )
+                    )
+
+                # ------------------------------------------------------------------
+                # Panel 6: Post-setup commands
+                # ------------------------------------------------------------------
+                post_commands_card = ui.card().classes("w-full q-mt-md")
+                with post_commands_card:
+                    ui.label("6. Post-setup commands (optional)").classes("text-subtitle1")
+                    ui.label(
+                        "Commands to run after setup completes (as the configured user, in the cloned "
+                        "repository directory). One command per line."
+                    ).classes("text-body2 text-grey-7")
+
+                    commands_textarea = ui.textarea(
+                        "Commands (one per line, optional)",
+                        on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                    ).props("rows=4").classes("w-full")
+
+                # ------------------------------------------------------------------
+                # Panel 7: Target and profile
+                # ------------------------------------------------------------------
+                target_profile_card = ui.card().classes("w-full q-mt-md")
+                with target_profile_card:
+                    ui.label("7. Output target and profile").classes("text-subtitle1")
+                    ui.label(
+                        "Select the type of output to generate (cloud-init, bash script, directory with "
+                        "runner, etc.) and which setup profile to apply."
+                    ).classes("text-body2 text-grey-7")
+
+                    with ui.row().classes("items-center q-gutter-md q-mt-sm"):
+                        target_select = _style_wide(
+                            ui.select(
+                                {t.name.lower(): t.name for t in _gui_available_targets},
+                                label="Export target (--target)",
+                                with_input=False,
+                                value="bash_script",  # default
+                                on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                            )
+                        )
+                        profile_select = _style_wide(
+                            ui.select(
+                                {p.name.lower(): p.name for p in SetupProfile},
+                                label="Profile (--profile)",
+                                value="full_setup",
+                                with_input=False,
+                                on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
+                            )
+                        )
+
+                    dump_config_checkbox = ui.checkbox(
+                        "Dump config only (--dump-config)",
                         on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
                     )
-                )
-
-            dump_config_checkbox = ui.checkbox(
-                "Dump config only (--dump-config)",
-                on_change=lambda: reset_output() if not (ui_blocked_by_preset or ui_blocked_by_ssh) else None
-            )
 
         # ------------------------------------------------------------------
         # Panel 8: Execution and output
@@ -1320,7 +1323,7 @@ def create_setup_tab(tab) -> SetupTabHandle:
                                 script_text=last_output_text,
                                 log_callback=_log_cb,
                                 status_callback=_status_cb,
-                                force_root=True,
+                                force_root=False,
                             )
                         except Exception as e:
                             error_msg = f"--- Error: {e} ---"

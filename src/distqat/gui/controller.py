@@ -45,6 +45,20 @@ class Controller:
         
         self.file_last_scanned: Dict[str, tuple] = {} # filename -> (updated_at_timestamp, size_str)
 
+    def _has_wandb_key(self, key: Optional[str]) -> bool:
+        return bool(key and key.strip())
+
+    def _emit_error_event(self, source: str, message: str, context: str = "") -> None:
+        """Send a structured error event to the UI (for toast + error panel)."""
+        event = {
+            "source": source,
+            "message": message,
+            "context": context or message,
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+        }
+        if self.error_callback:
+            self.error_callback(event)
+
     def _update_log_buffer(self, source: str, line: str):
         if source not in self.log_buffers:
             self.log_buffers[source] = deque(maxlen=20) # Keep last 20 lines for context
@@ -301,6 +315,16 @@ class Controller:
 
     async def start_head_node(self, server_name: str, config: JobConfig):
         """Start the head node (client/monitor)."""
+        if not self.no_wandb and not self._has_wandb_key(getattr(config, "wandb_api_key", None)):
+            self._emit_error_event(
+                source="W&B",
+                message="W&B API key is required to start a head node. Please set it in the GUI (Job Config) and try again.",
+                context="Start aborted: missing config.wandb_api_key.",
+            )
+            if self.status_callback:
+                self.status_callback("Start aborted: missing W&B API key.")
+            return
+
         server = self.get_server(server_name)
         if not server:
             raise ValueError(f"Server {server_name} not found")
@@ -311,7 +335,12 @@ class Controller:
         
         # Prepare command
         # Assuming the repo is cloned at remote_root_dir
-        cmd = f"cd {server.remote_root_dir} && source .venv/bin/activate && python start_trainer_client.py --config-path {config.config_path} --public-ip {server.hostname}"
+        env_parts = [f"cd {server.remote_root_dir}", "source .venv/bin/activate"]
+
+        if getattr(config, "hf_token", None):
+            env_parts.append(f"export HF_TOKEN={config.hf_token}")
+
+        cmd = " && ".join(env_parts) + f" && python start_trainer_client.py --config-path {config.config_path} --public-ip {server.hostname}"
         if config.wandb_api_key and not self.no_wandb:
             self.wandb_api = wandb.Api(api_key=config.wandb_api_key)
             cmd = f"export WANDB_API_KEY={config.wandb_api_key} && " + cmd
@@ -388,12 +417,22 @@ class Controller:
         if self.status_callback:
             self.status_callback(f"Head node started on {server.display_name}")
 
-    async def start_worker_nodes(self, server_names: List[str], num_servers_per_node: int = 2, device: str = "cpu", batch_size: int = 32, grpc_announce_port: Optional[int] = None):
+    async def start_worker_nodes(self, server_names: List[str], num_servers_per_node: int = 1, device: str = "cpu", batch_size: int = 32, inner_steps: int = 500, grpc_announce_port: Optional[int] = None, host_port: Optional[int] = None):
         """Start worker nodes (servers)."""
         if not self.initial_peers:
             raise RuntimeError("Initial peers not yet received. Start head node first.")
+
+        if not self.no_wandb and not self._has_wandb_key(getattr(self.state.last_job_config, "wandb_api_key", None)):
+            self._emit_error_event(
+                source="W&B",
+                message="W&B API key is required to start worker nodes. Please set it in the GUI (Job Config) and try again.",
+                context="Start aborted: missing state.last_job_config.wandb_api_key.",
+            )
+            if self.status_callback:
+                self.status_callback("Start aborted: missing W&B API key.")
+            return
             
-        print(f"Starting worker nodes: {server_names} with {device} batch_size={batch_size} grpc_announce_port={grpc_announce_port}")
+        print(f"Starting worker nodes: {server_names} with {device} batch_size={batch_size} inner_steps={inner_steps} grpc_announce_port={grpc_announce_port} host_port={host_port}")
         for name in server_names:
             print(f"Starting worker node: {name}")
             server = self.get_server(name)
@@ -436,9 +475,19 @@ class Controller:
                 peers_arg = f"'{clean_peers}'"
 
             print(f"Peers arg: {peers_arg}")
+
+            env_parts = [f"cd {server.remote_root_dir}", "source .venv/bin/activate"]
+            # Optional HuggingFace token (comes from last_job_config)
+            if getattr(self.state.last_job_config, "hf_token", None):
+                env_parts.append(f"export HF_TOKEN={self.state.last_job_config.hf_token}")
+            env_parts.append("export HF_HUB_ENABLE_HF_TRANSFER=0")
+
+            env_prefix = " && ".join(env_parts)
+            cmd = f"{env_prefix} && python start_servers.py --config-path {self.state.last_job_config.config_path} --network-initial-peers {peers_arg} --num-servers {num_servers_per_node} --public-ip {server.hostname} --device {device} --diloco-batch-size-per-step {batch_size} --diloco-inner-steps {inner_steps}"
             
-            cmd = f"cd {server.remote_root_dir} && source .venv/bin/activate && python start_servers.py --config-path {self.state.last_job_config.config_path} --network-initial-peers {peers_arg} --num-servers {num_servers_per_node} --public-ip {server.hostname} --device {device} --diloco-batch-size-per-step {batch_size}"
-            
+            if host_port:
+                cmd += f" --network-server-base-hostport-announce {host_port}"
+
             if grpc_announce_port:
                 cmd += f" --network-server-base-grpc-announceport {grpc_announce_port}"
 

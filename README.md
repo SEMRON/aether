@@ -3,12 +3,14 @@
 > Decentralized, pipeline-parallel training with automatic expert discovery, DiLoCo-style optimization, and resilient failover.
 
 
-## 🚀 Quick Start
-**New to DistQat?** Check out our [Quick Start Guide](./docs/QUICK_START.md) to get up and running in 5 minutes!
+## Quick Start
+**New to DistQat?** 
+We have to Quick Start Guides one for manual setup and a console based workflow and one for more visual and simpler workflow.
+We recommend first trying the [GUI Quick Start Guide](./docs/QUICK_START_GUI.md) but if you are encountering any errors that you don't understand or are not well explained please try the [Manual Quick Start Guide](./docs/QUICK_START.md).
+
 
 For more information continue reading below or refer to the full documentation:
 > 📊 **[Full documentation with Diagrams→](docs/README.md)**
-
 
 
 ## Table of Contents
@@ -20,6 +22,7 @@ For more information continue reading below or refer to the full documentation:
 - [Run Modes](#run-modes)
   - [Fully Local Sandbox](#fully-local-sandbox)
   - [Bring Your Own Machines](#bring-your-own-machines)
+  - [SkyPilot Deployment](#skypilot-deployment)
 - [Configuration](#configuration)
 - [Observability](#observability)
 - [Resilience & Failover](#resilience--failover)
@@ -73,7 +76,7 @@ Best for iterating on configs or operations demos.
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python=3.10
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu129
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 source .venv/bin/activate
 uv pip install --editable .
 
@@ -86,29 +89,26 @@ python run_local.py  # defaults to configs/resnet18.yaml
 ### Bring Your Own Machines
 1. **Trainer + monitor host**
    ```bash
-   export PUBLIC_IP=<trainer_public_ip>
    wandb login
-   python start_trainer_client.py --public-ip "${PUBLIC_IP}"
+   python start_trainer_client.py
    ```
-   Copy the peer addresses written to `logs/<experiment_prefix>/initial_peers.txt`.
+   Copy the peer addresses seen in the `std ouput` or as written to `logs/<experiment_prefix>/initial_peers.txt`.
 
 2. **Server hosts**
    ```bash
+   # initial peers gotten from step above
    export INITIAL_PEERS='/ip4/<trainer_public_ip>/tcp/50000/p2p/<peer_id>'
    python start_servers.py \
-     --public-ip "<this_server_ip>" \
-     --num-servers 1 \
      --initial-peers "${INITIAL_PEERS}"
    ```
-   Repeat on as many machines as you like; each process will auto-assign to open pipeline slots.
+   Repeat on as many machines as you like; each process will auto-assign to open pipeline slots or create new model replicas (experts).
 
 ### Preview of adaptive batch sizing for heterogenous training
 Here is an example of how heterogenous training will look like with adaptive batchsizing. Currently the batch size still has to be set manually.
 1. **Trainer + monitor host**
    ```bash
-   export PUBLIC_IP=<trainer_public_ip>
    wandb login
-   python start_trainer_client.py --public-ip "${PUBLIC_IP}"
+   python start_trainer_client.py
    ```
    Copy the peer addresses written to `logs/<experiment_prefix>/initial_peers.txt`.
 
@@ -116,25 +116,21 @@ Here is an example of how heterogenous training will look like with adaptive bat
    ```bash
    export INITIAL_PEERS='/ip4/<trainer_public_ip>/tcp/50000/p2p/<peer_id>'
    python start_servers.py \
-     --public-ip "<this_server_ip>" \
-     --num-servers 1 \
      --initial-peers "${INITIAL_PEERS}" \
-     --config-path "configs/resnet18.yaml"
+     --config-path "configs/resnet50.yaml"
    ```
 
   3. **Server host with a CPU**
    ```bash
    export INITIAL_PEERS='/ip4/<trainer_public_ip>/tcp/50000/p2p/<peer_id>'
    python start_servers.py \
-     --public-ip "<this_server_ip>" \
-     --num-servers 1 \
      --initial-peers "${INITIAL_PEERS}" \
-     --config-path "configs/resnet18.yaml" \
+     --config-path "configs/resnet50.yaml" \
      --diloco-batch-size-per-step 1 \
      --device cpu
    ```
 
-   If we look at the logs we should be able to see that the servers train at a similar speed since the performances are aligned with the batch size and thus they can use DiLoCo to average without the bottleneck of needing to wait for slower peers.
+  If we look at the logs we should be able to see that the servers train at a similar speed since the performances are aligned with the batch size and thus they can use DiLoCo to average without the bottleneck of needing to wait for slower peers.
 
 ## Configuration
 - **Configs** live in `configs/*.yaml`. The default `experiment_prefix`, DiLoCo parameters, and model pipeline (e.g. `resnet`, `gpt-neo`, `wav2vec`) live here.

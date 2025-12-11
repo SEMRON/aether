@@ -155,6 +155,24 @@ def store_expert_batch_size(
     return dht.store(key, str(batch_size), expiration_time=expiration_time, return_future=not wait)
 
 
+def store_expert_inner_steps(
+    dht: DHT, expert_uid: ExpertUID, inner_steps: int, expiration: DHTExpiration = 60, wait: bool = True
+) -> bool:
+    """
+    Store inner_steps for an expert in the DHT.
+    
+    :param dht: DHT instance to store inner steps in
+    :param expert_uid: expert UID to store inner steps for
+    :param inner_steps: inner_steps value
+    :param expiration: expiration time in seconds
+    :param wait: if True, awaits for storage to finish
+    :returns: True if storage succeeded, False otherwise
+    """
+    key = f"{expert_uid}_inner_steps"
+    expiration_time = get_dht_time() + expiration
+    return dht.store(key, str(inner_steps), expiration_time=expiration_time, return_future=not wait)
+
+
 def get_expert_batch_size(
     dht: DHT, expert_uid: ExpertUID, latest: bool = True
 ) -> Optional[int]:
@@ -167,6 +185,27 @@ def get_expert_batch_size(
     :returns: batch_size_per_step if found, None otherwise
     """
     key = f"{expert_uid}_batch_size"
+    result = dht.get(key, latest=latest)
+    if result is not None and result.value is not None:
+        try:
+            return int(result.value)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def get_expert_inner_steps(
+    dht: DHT, expert_uid: ExpertUID, latest: bool = True
+) -> Optional[int]:
+    """
+    Retrieve inner_steps for an expert from the DHT.
+    
+    :param dht: DHT instance to query
+    :param expert_uid: expert UID to get inner steps for
+    :param latest: if True, get the latest value
+    :returns: inner_steps if found, None otherwise
+    """
+    key = f"{expert_uid}_inner_steps"
     result = dht.get(key, latest=latest)
     if result is not None and result.value is not None:
         try:

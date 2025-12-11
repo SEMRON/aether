@@ -19,6 +19,7 @@ from .distilgpt2 import (
 )
 from .gpt_neo import GPTNeoFull, GPTNeoHeadExpert, GPTNeoBodyExpert, GPTNeoTailExpert
 from .wav2vec2 import Wav2Vec2Full, Wav2Vec2Head, Wav2Vec2Body, Wav2Vec2Tail
+from .biggan.biggan_adapter import BigGANAdapter
 
 MODEL_TYPES: Dict[str, Type[Any]] = {
     "mlp": MLP,
@@ -41,6 +42,7 @@ MODEL_TYPES: Dict[str, Type[Any]] = {
     "wav2vec2.head": Wav2Vec2Head,
     "wav2vec2.body": Wav2Vec2Body,
     "wav2vec2.tail": Wav2Vec2Tail,
+    "biggan.full": BigGANAdapter,
 }
 
 
@@ -66,7 +68,13 @@ def get_model(config: Config, pipeline_step_cfg: ModelConfig) -> Any:
     try:
         model_cls = MODEL_TYPES[pipeline_step_cfg.model_name]
     except KeyError:
+        # if pipeline_step_cfg.model_name == "biggan.full":
+        #     raise ValueError("BigGAN is not supported in the baseline model")
         available = ", ".join(sorted(MODEL_TYPES.keys()))
         raise ValueError(f"Unknown model '{pipeline_step_cfg.model_name}'. Available: {available}")
-    kwargs = kwargs_from_config(model_cls.__init__, pipeline_step_cfg, config.data)
+    
+    aliases = {
+        "config": config.biggan,
+    }
+    kwargs = kwargs_from_config(model_cls.__init__, pipeline_step_cfg, config.data, aliases)
     return model_cls(**kwargs)

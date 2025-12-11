@@ -17,6 +17,14 @@ class RepoCloneModule(Module):
         ]
 
     def commands(self, cfg: Config) -> Iterable[str]:
-        return [
-            f"sudo -u {cfg.username} /opt/aether/bin/clone-repo.sh",
-        ]
+        cmds = []
+        if cfg.os.id in [Distro.UBUNTU, Distro.DEBIAN]:
+            cmds.append("if ! command -v git &> /dev/null; then apt-get update && apt-get install -y git; fi")
+        elif cfg.os.id in [Distro.FEDORA, Distro.RHEL, Distro.CENTOS, Distro.AMAZON] or \
+             cfg.os.platform_id in [Platform.FEDORA_39, Platform.FEDORA_40, Platform.FEDORA_41, Platform.FEDORA_42,
+                                    Platform.ENTERPRISE_LINUX_8, Platform.ENTERPRISE_LINUX_9,
+                                    Platform.AMAZON_LINUX_2022, Platform.AMAZON_LINUX_2023]:
+            cmds.append("if ! command -v git &> /dev/null; then dnf install -y git; fi")
+
+        cmds.append(f"sudo -u {cfg.username} /opt/aether/bin/clone-repo.sh")
+        return cmds

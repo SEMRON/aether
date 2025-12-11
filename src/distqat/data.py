@@ -7,6 +7,7 @@ from datasets import load_dataset
 from datasets.distributed import split_dataset_by_node
 from transformers import AutoTokenizer, Wav2Vec2Processor
 
+from distqat.utils.biggan.utils import CenterCropLongEdge
 from distqat.config import DataConfig
 from distqat.utils.hash import hash64
 import numpy as np
@@ -133,7 +134,7 @@ def speech_collate_fn(features, processor):
     return uids, batch
 
 def collate_fn(data_config: DataConfig):
-    if data_config.task_type == "cv":
+    if data_config.task_type == "cv" or data_config.task_type == "image_gen":
         return cv_collate_fn
     elif data_config.task_type == "llm":
         return llm_collate_fn
@@ -155,9 +156,9 @@ def get_train_val_datasets(data_config: DataConfig):
         tuple: (train_loader, val_loader) - PyTorch DataLoaders for training and validation
     """
     if data_config.task_type == "cv":
-        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True)
+        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True, token=data_config.hf_token)
         content_key = "image"
-        # Define transforms based on dataset
+        # For CV tasks, use dataset-specific normalization stats
         if "mnist" in data_config.dataset_name:
             transform = transforms.Compose([
                 transforms.ToTensor(),
@@ -204,7 +205,7 @@ def get_train_val_datasets(data_config: DataConfig):
             content_key = "text"
             tokenizer_name = data_config.full_model_name
 
-        ds = load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True)
+        ds = load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True, token=data_config.hf_token)
         train_dataset = SequencePackingDataset(
             dataset=ds,
             tokenizer=AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True, model_max_length=int(1e30)),
@@ -216,11 +217,32 @@ def get_train_val_datasets(data_config: DataConfig):
     elif data_config.task_type == "speech":
         processor = Wav2Vec2Processor.from_pretrained(data_config.full_model_name)
         train_dataset = SpeechDataset(
-            load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True),
+            load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True, token=data_config.hf_token),
             processor,
         )
         val_dataset = None
 
+    elif data_config.task_type == "image_gen":
+        norm_mean = [0.5,0.5,0.5]
+        norm_std = [0.5,0.5,0.5]
+        image_size = int(data_config.img_size)
+        if 'cifar10' in data_config.dataset_name:
+            tfms = []
+        else:
+            tfms = [
+                CenterCropLongEdge(),
+            ]
+        transform = transforms.Compose([transforms.Lambda(lambda img: img.convert('RGB'))] +
+            tfms + 
+            [transforms.Resize(image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(norm_mean, norm_std),
+        ])
+        content_key = "img" if 'cifar10' in data_config.dataset_name else "image"
+        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True, token=data_config.hf_token)
+
+        train_dataset = CVDataset(ds, content_key=content_key, transform=transform)
+        val_dataset = None
     else:
         raise ValueError(f"Unsupported dataset: {data_config.dataset_name}")
 

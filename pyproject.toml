@@ -29,9 +29,17 @@ docs = [
   "sphinxcontrib-mermaid>=0.9,<1.0",
 ]
 gpuspecific = [
-  "torch",
+  "torch>=2.9",
   "torchvision",
   "torchaudio",
+  "torchcodec",
+]
+amdgpuspecific = [
+  "torch>=2.9",
+  "torchvision",
+  "torchaudio",
+  "torchcodec",
+  "pytorch-triton-rocm==3.5.1",
 ]
 
 [tool.setuptools.packages.find]

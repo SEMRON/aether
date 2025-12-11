@@ -15,12 +15,14 @@ class Server(BaseModel):
     
     # Network/Process configuration
     mapped_monitor_port: Optional[int] = None
+    mapped_host_port: Optional[int] = None
+    grpc_announce_port: Optional[int] = None
     
     # Worker configuration
     num_servers: int = 1
     device: str = "cpu"
-    batch_size: int = 16
-    grpc_announce_port: Optional[int] = None
+    batch_size: int = 64
+    inner_steps: int = 500
 
     @property
     def display_name(self) -> str:
@@ -31,6 +33,7 @@ class JobConfig(BaseModel):
     wandb_api_key: Optional[str] = None
     wandb_project: Optional[str] = None
     wandb_entity: Optional[str] = None
+    hf_token: Optional[str] = None
 
 class GlobalState(BaseModel):
     servers: List[Server] = Field(default_factory=list)

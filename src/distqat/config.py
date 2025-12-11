@@ -1,6 +1,7 @@
-from typing import Optional, Literal, List, Callable
+from typing import Optional, Literal, List, Callable, Dict, Any
 from typing import List, Optional
 
+import json
 import click
 from pydantic import BaseModel, Field, PositiveInt, PrivateAttr, computed_field
 from pydantic import field_validator
@@ -8,6 +9,7 @@ from pydanclick import from_pydantic
 from pydantic_yaml import parse_yaml_file_as
 from deepmerge import always_merger
 import importlib
+import os
 from pathlib import Path
 from .quant.scheme import QuantScheme
 from .utils.rules import OverrideRule
@@ -19,6 +21,18 @@ class DataConfig(BaseModel):
     dataset_name: str = "mnist"
     dataset_config: Optional[str] = None
     dataset_split: Optional[str] = "train"
+    hf_token: Optional[str] = None
+
+    @field_validator("hf_token", mode="before")
+    @classmethod
+    def _fill_hf_token_from_env(cls, value: Optional[str]) -> Optional[str]:
+        """
+        Allow HF token to come from the HF_TOKEN environment variable when the
+        value is not explicitly provided (in YAML or CLI).
+        """
+        if value is None:
+            return os.getenv("HF_TOKEN")
+        return value
 
     num_workers: int = 1
     shuffle_buffer_size: int = 8192
@@ -39,7 +53,7 @@ class DataConfig(BaseModel):
 
 
 class OptimConfig(BaseModel):
-    type: Literal["sgd", "adam"] = "sgd"
+    type: Literal["sgd", "adam", "biggan"] = "sgd"
     
     # Parameters for SGD
     sgd_lr: float = 0.7
@@ -52,12 +66,23 @@ class OptimConfig(BaseModel):
     adam_betas1: float = 0.9
     adam_betas2: float = 0.95
 
+    # Parameters for BigGAN
+    biggan_G_lr: float = 2e-4
+    biggan_D_lr: float = 2e-4
+    biggan_G_B1: float = 0.0
+    biggan_D_B1: float = 0.0
+    biggan_G_B2: float = 0.999
+    biggan_D_B2: float = 0.999
+    biggan_adam_eps: float = 1.0e-06
+    biggan_model_config: Dict[str, Any] = {}
+
 class DilocoConfig(BaseModel):
     inner_optim: OptimConfig = OptimConfig(type="adam")
     outer_optim: OptimConfig = OptimConfig(type="sgd")
     inner_steps: int = 50
     outer_steps: int = 10
     batch_size_per_step: int = 64
+    gradient_accumulation_steps: int = 1
     min_refresh_period: float = 0.5
     max_refresh_period: float = 30
     default_refresh_period: float = 3
@@ -163,9 +188,10 @@ class NetworkConfig(BaseModel):
     monitor_port: int = 50000
     client_port: int = 51000
     trainer_base_port: int = 50100 # Base port for trainer, actual port = base + idx (0 to max_expert_index)
-    server_base_hostport: int = 50500  # Base port for server host, actual port = base + idx (0 to num_servers)
-    server_base_grpcport: int = 51500  # Base port for server gRPC, actual port = base + idx (0 to num_servers)
-    server_base_grpc_announceport: int = 51500  # Base port for server announce necessary when port mapping is used,  actual port = base + idx (0 to num_servers)
+    server_base_hostport: int = 50500  # Base port for server host (local binding), actual port = base + idx (0 to num_servers)
+    server_base_hostport_announce: int = 50500  # Base port for server host announce (DHT peer discovery), necessary when port mapping is used, actual port = base + idx (0 to num_servers)
+    server_base_grpcport: int = 51500  # Base port for server gRPC (local binding), actual port = base + idx (0 to num_servers)
+    server_base_grpc_announceport: int = 51500  # Base port for server gRPC announce (expert endpoint), necessary when port mapping is used, actual port = base + idx (0 to num_servers)
 
 class ParamMirrorConfig(BaseModel):
     enable: bool = True
@@ -194,9 +220,10 @@ class Config(BaseModel):
     param_mirror: ParamMirrorConfig = ParamMirrorConfig()
     data_server: DataServerConfig = DataServerConfig()
     checkpoint_dir: Optional[Path] = None
-
     log_dir: Path = Path("logs") / experiment_prefix
 
+    # Optional holder for model-specific configs (e.g., BigGAN CLI-style params)
+    biggan: Optional[Dict[str, Any]] = None
 
     # Attribute to store the config path
     path: Optional[str] = None
@@ -210,8 +237,9 @@ class Config(BaseModel):
 
 @click.command()
 @click.option("--config-path", type=str, default=None)
-@from_pydantic(Config)
-def parse_args(config_path: Optional[str], config: Config, **extra_kwargs):
+@click.option("--network-initial-peers", type=str, default=None, help="JSON array string or comma-separated list of initial peers")
+@from_pydantic(Config, exclude=["network.initial_peers"])
+def parse_args(config_path: Optional[str], network_initial_peers: Optional[str], config: Config, **extra_kwargs):
     if config_path is None:
         cfg = Config()
     else:
@@ -223,6 +251,17 @@ def parse_args(config_path: Optional[str], config: Config, **extra_kwargs):
 
     merged_cfg = cfg.model_validate(merged_dict)
     
+    # Handle network-initial-peers manually (try JSON first, then comma-separated)
+    if network_initial_peers is not None:
+        try:
+            parsed_json = json.loads(network_initial_peers)
+            if isinstance(parsed_json, list):
+                merged_cfg.network.initial_peers = parsed_json
+            else:
+                merged_cfg.network.initial_peers = [p.strip() for p in network_initial_peers.split(",") if p.strip()]
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"Failed to parse network-initial-peers: {e}")
+    
     if merged_cfg.device == "rocm":
         merged_cfg.device = "cuda"
 
@@ -230,4 +269,3 @@ def parse_args(config_path: Optional[str], config: Config, **extra_kwargs):
     merged_cfg.path = config_path
 
     return merged_cfg, extra_kwargs
-

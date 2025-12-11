@@ -93,7 +93,7 @@ def config_errors(cfg: Config):
         "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup", "list", "irc", "gnats",
         "nobody", "systemd-network", "systemd-resolve", "syslog", "messagebus", "_apt", "lxd", "uuidd", "dnsmasq", "radvd", "sshd", "ftp", "postfix",
         "mysql", "postgres", "ntp", "chrony", "operator", "staff", "wheel", "sudo", "adm", "docker", "render", "video", "audio", "input", "tty",
-        "ec2-user", "admin", "centos", "debian", "fedora", "core",
+        "admin", "centos", "debian", "fedora", "core",
     ]
 
     if cfg.management_user and cfg.management_user in reserved_user_names:

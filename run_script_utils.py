@@ -53,14 +53,17 @@ def get_client_addresses(public_ip: str, network_config: NetworkConfig):
 
 def get_server_addresses(public_ip: str, network_config: NetworkConfig, idx: int = 0):
         hostport = network_config.server_base_hostport + idx
+        hostport_announce = network_config.server_base_hostport_announce + idx
         grpcport = network_config.server_base_grpcport + idx
         grpc_announceport = network_config.server_base_grpc_announceport + idx
 
         listen_on = f"0.0.0.0:{grpcport}"
         announce_endpoint = f"{public_ip}:{grpc_announceport}"
 
+        # host_maddrs uses the local binding port
         hostmaddr_str = f'["/ip4/0.0.0.0/tcp/{hostport}"]'
-        announcemaddr_str = f'["/ip4/{public_ip}/tcp/{hostport}", "/ip4/127.0.0.1/tcp/{hostport}"]'
+        # announce_maddrs uses the mapped/announced port for DHT peer discovery
+        announcemaddr_str = f'["/ip4/{public_ip}/tcp/{hostport_announce}", "/ip4/127.0.0.1/tcp/{hostport}"]'
         
         return hostmaddr_str, announcemaddr_str, listen_on, announce_endpoint
 
@@ -93,7 +96,7 @@ def wait_for_initial_peers(initial_peers_path: str):
         raise RuntimeError(error_message)
 
     initial_peers_json = json.dumps(initial_peers)
-    print(f"--------------------------------\nInitial peers JSON: {initial_peers_json}\n--------------------------------")
+    print(f"\n--------------------------------\nInitial peers JSON: {initial_peers_json}\n--------------------------------\n")
 
     return initial_peers_json
 
@@ -112,7 +115,7 @@ def clear_data_server_log(log_dir: Path):
 def wait_for_data_server_ready(client_proc: subprocess.Popen, ds_log_path: str, deadline: int = 60):
     ready_line = "Data server manager started"
     ds_deadline = time.time() + deadline  # up to 60s for large models (e.g., GPT-Neo) to initialize
-    print(f"Waiting for data server to be ready")
+    print(f"\n--------------------------------\nWaiting for data server to be ready... \n--------------------------------")
     ready = False
     while time.time() < ds_deadline:
         try:
@@ -120,7 +123,6 @@ def wait_for_data_server_ready(client_proc: subprocess.Popen, ds_log_path: str, 
                 with open(ds_log_path, "r") as f:
                     contents = f.read()
                     if ready_line in contents:
-                        print("Data server ready")
                         ready = True
                         break
         except Exception as e:
@@ -134,7 +136,7 @@ def wait_for_data_server_ready(client_proc: subprocess.Popen, ds_log_path: str, 
     if not ready:
         raise RuntimeError("Timed out waiting for data server manager to start, check the log file for more details in logs/<experiment_prefix>/data_server.log")
     
-    print(f"Data server should be ready now")
+    print(f"\n--------------------------------\nData server should be ready now \n--------------------------------")
 
 
 def ensure_no_leftover_distqat_processes():

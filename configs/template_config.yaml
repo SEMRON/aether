@@ -1,0 +1,334 @@
+# distqat template configuration
+#
+# This file includes all parameters defined in `src/distqat/config.py`.
+# Values shown are safe defaults; change as needed.
+
+# --------
+# Logging
+# --------
+
+# Weights & Biases entity (username or team). If omitted, wandb decides (env / default).
+wandb_entity: null
+
+# Weights & Biases project name. Use null to disable wandb project binding.
+wandb_project: null
+
+# Experiment name prefix used for grouping and default log directory.
+experiment_prefix: "default_experiment"
+
+# Required if multiple processes log to the same W&B run.
+# Tip: set this to a stable string (or let wandb generate it in a single-process run).
+wandb_run_id: null
+
+# -----------------
+# Data / Task setup
+# -----------------
+
+data:
+  # HuggingFace dataset name (or other dataset identifier used by dataloader).
+  dataset_name: "mnist"
+
+  # Optional dataset config/subset name (HF "config"), e.g. "default", "clean", "en".
+  dataset_config: null
+
+  # Optional dataset split name, e.g. "train", "validation", "train.100".
+  dataset_split: "train"
+
+  # Optional HuggingFace token.
+  # If null, DistQAT will also check the HF_TOKEN environment variable.
+  hf_token: null
+
+  # DataLoader workers per process.
+  num_workers: 1
+
+  # Shuffle buffer size for streaming / iterable datasets.
+  shuffle_buffer_size: 8192
+
+  # Trainer precision mode.
+  # One of: "fp16-mixed", "bf16-mixed", "32-true".
+  precision: "fp16-mixed"
+
+  # Task type selects task/model-specific behavior.
+  # One of: "cv", "llm", "speech", "image_gen", "node_pred", "rl".
+  task_type: "cv"
+
+  # Full pretrained model name for HF model registry; used by model loaders.
+  full_model_name: "EleutherAI/gpt-neo-1.3B"
+
+  # --- CV-specific (and image generation tasks) ---
+  # Number of input image channels.
+  num_channels: 3
+
+  # Input image size (pixels), used by CV pipelines.
+  img_size: 32
+
+  # --- LLM-specific ---
+  # Sequence length used for tokenized batches.
+  seq_len: 128
+
+  # --- Speech-specific ---
+  # Audio sampling rate expected by the speech pipeline.
+  sampling_rate: 16000
+
+# ------------------------------
+# DiLoCo / optimization settings
+# ------------------------------
+
+diloco:
+  # Inner optimizer configuration.
+  inner_optim:
+    # Optimizer type.
+    # One of: "sgd", "adam", "biggan".
+    type: "adam"
+
+    # --- SGD params (used when type: "sgd") ---
+    sgd_lr: 0.7
+    sgd_momentum: 0.9
+    sgd_nesterov: true
+
+    # --- Adam params (used when type: "adam") ---
+    adam_lr: 0.0004
+    adam_weight_decay: 0.1
+    adam_betas1: 0.9
+    adam_betas2: 0.95
+
+    # --- BigGAN params (used when type: "biggan") ---
+    biggan_G_lr: 0.0002
+    biggan_D_lr: 0.0002
+    biggan_G_B1: 0.0
+    biggan_D_B1: 0.0
+    biggan_G_B2: 0.999
+    biggan_D_B2: 0.999
+    biggan_adam_eps: 1.0e-06
+
+    # Free-form BigGAN model config dictionary forwarded to the BigGAN implementation.
+    biggan_model_config: {}
+
+  # Outer optimizer configuration.
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.7
+    sgd_momentum: 0.9
+    sgd_nesterov: true
+    adam_lr: 0.0004
+    adam_weight_decay: 0.1
+    adam_betas1: 0.9
+    adam_betas2: 0.95
+
+  # Number of inner steps per outer step.
+  inner_steps: 50
+
+  # Number of outer steps.
+  outer_steps: 10
+
+  # Batch size per step (per process).
+  batch_size_per_step: 64
+
+  # Gradient accumulation steps.
+  gradient_accumulation_steps: 1
+
+  # Minimum refresh period (seconds) for peer averaging.
+  min_refresh_period: 0.5
+
+  # Maximum refresh period (seconds) for peer averaging.
+  max_refresh_period: 30
+
+  # Default refresh period (seconds) used when adaptive scheduling is enabled.
+  default_refresh_period: 3
+
+  # Expected number of peers participating in drift calculation.
+  expected_drift_peers: 3
+
+  # Expected drift rate used for adaptive control.
+  expected_drift_rate: 0.2
+
+  # EMA alpha for tracking performance.
+  performance_ema_alpha: 0.1
+
+  # Metadata expiration (seconds) for peer state.
+  metadata_expiration: 60.0
+
+  # Optional averaging timeout (seconds). If null, the backend default is used.
+  averaging_timeout: null
+
+  # Timeout (seconds) for loading state from peers.
+  load_state_timeout: 600.0
+
+  # Verbose logging for DiLoCo.
+  verbose: true
+
+# -------------------------
+# Model pipeline definition
+# -------------------------
+
+model_pipeline:
+  # List of model "experts" / components to run in a pipeline.
+  pipeline:
+    - # Model registry key (e.g. "mlp.full", "gptneo.full", "wav2vec2.full").
+      model_name: "resnet18.full"
+
+      # Number of classes for classification heads (CV defaults).
+      num_classes: 10
+
+      # Hidden dimension used by some models.
+      hid_dim: 2048
+
+      # Number of layers used by some models.
+      n_layers: 8
+
+      # Expert index (used LLM models).
+      idx: 8
+
+      # Arbitrary model-specific parameters forwarded to the expert constructor/sample_input.
+      extra: {}
+
+  # Max time (seconds) allowed for a forward call.
+  forward_timeout: 40.0
+
+  # Max time (seconds) allowed for a backward call.
+  backward_timeout: 90.0
+
+# -----------------
+# Quantization setup
+# -----------------
+
+quant:
+  # Base quantization config applied everywhere unless overridden.
+  base:
+    # Quantization scheme for weights.
+    weight_quant:
+      # Quantizer registry key.
+      algo: "LearnedStepQuantizer"
+
+      # Bitwidth for quantization.
+      num_bits: 8
+
+      # Slice bits.
+      slice_bits: 4
+
+      # Additional algorithm-specific parameters.
+      params: {}
+
+    # Quantization scheme for activations.
+    activation_quant:
+      algo: "LearnedStepQuantizer"
+      num_bits: 8
+      slice_bits: 1
+      params: {}
+
+    # Accumulator length.
+    accumulator_length: 512
+
+    # Accumulator bits.
+    accumulator_bits: 8
+
+# ------------------------
+# Networking / peer-to-peer
+# ------------------------
+
+network:
+  # Initial peer multiaddrs to connect to at startup.
+  initial_peers: []
+
+  # Multiaddrs to bind locally (listen addresses).
+  host_maddrs:
+    - "/ip4/0.0.0.0/tcp/0"
+
+  # Multiaddrs to announce (advertise) to the DHT.
+  announce_maddrs: []
+
+  # Whether to use IPFS for peer discovery / transport (if supported in your stack).
+  use_ipfs: false
+
+  # If true, run in client-only mode.
+  client_mode: false
+
+  # Path to the peer identity key file.
+  identity_path: "peer_key"
+
+  # Optional Hivemind compression for tensor communication.
+  # One of: "none", "fp16", "scaled-fp16", "uniform8bit", "quantile8bit", "blockwise8bit".
+  # Use null for no compression setting.
+  hivemind_compression: null
+
+  # If true, skip loading state from peers at startup.
+  skip_load_from_peers: false
+
+  # --- Ports ---
+  # Port for monitoring service.
+  monitor_port: 50000
+
+  # Port for the client IPC.
+  client_port: 51000
+
+  # Base port for trainers; actual port = trainer_base_port + idx (0..max_expert_index).
+  trainer_base_port: 50100
+
+  # Base port for server host local binding; actual = base + idx (0..num_servers).
+  server_base_hostport: 50500
+
+  # Base port for server host announce; required when port mapping is used.
+  server_base_hostport_announce: 50500
+
+  # Base port for server gRPC local binding; actual = base + idx (0..num_servers).
+  server_base_grpcport: 51500
+
+  # Base port for server gRPC announce; required when port mapping is used.
+  server_base_grpc_announceport: 51500
+
+# Maximum expert index used for routing/port math.
+max_expert_index: 128
+
+# Device backend selection used by your training runtime.
+# Note: "rocm" is normalized to "cuda" internally.
+device: "cuda"
+
+# -----------------------------
+# Parameter mirroring (optional)
+# -----------------------------
+
+param_mirror:
+  # Enable periodic parameter mirroring.
+  enable: true
+
+  # Refresh period in seconds.
+  refresh_every: 300
+
+# ----------------------
+# Data server (IPC pool)
+# ----------------------
+
+data_server:
+  # IPC host address.
+  ipc_host: "127.0.0.1"
+
+  # IPC port.
+  ipc_port: 52555
+
+  # IPC auth key / namespace.
+  ipc_key: "distqat"
+
+  # Number of worker processes.
+  num_workers: 0
+
+  # Worker pool size.
+  pool_size: 30
+
+# -------------------
+# Checkpoints / output
+# -------------------
+
+# Optional directory to write checkpoints (null disables or uses runtime defaults).
+checkpoint_dir: null
+
+# Directory for logs/artifacts.
+# Default is "logs/<experiment_prefix>" if you omit this field.
+log_dir: "logs/default_experiment"
+
+# Optional holder for model-specific configs (e.g., BigGAN CLI-style params).
+# Leave null unless you know your model loader consumes this.
+biggan: null
+
+# Internal field used to store the config path for downstream spawned processes.
+# Usually do not set this in YAML.
+path: null

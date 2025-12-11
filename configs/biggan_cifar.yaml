@@ -1,0 +1,133 @@
+wandb_project: "distqat"
+experiment_prefix: "biggan-cifar"
+
+world_size: 1
+device: &device "cuda"
+
+log_dir: "logs/biggan_cifar"
+
+
+# BigGAN-specific configuration kept separate from the general schema.
+# These mirror externals/biggan/utils.py parser arguments as closely as possible.
+biggan: &biggan_config
+  
+  # Model
+  model: "BigGAN"
+  G_param: "SN"        # SN | SVD | None
+  D_param: "SN"        # SN | SVD | None
+  G_ch: 64
+  D_ch: 64
+  G_depth: 1
+  D_depth: 1
+  D_wide: true          # corresponds to --D_thin flag (dest D_wide)
+  G_shared: true
+  shared_dim: 0         # 0 => equals dim_z
+  dim_z: 128
+  z_var: 1.0
+  hier: true
+  cross_replica: false
+  mybn: false
+  G_nl: "relu"
+  D_nl: "relu"
+  G_attn: "0"
+  D_attn: "0"
+  norm_style: "bn"     # bn | in | ln | gn
+  resolution: 32
+
+  # Init, seeds
+  seed: 0
+  G_init: "N02"
+  D_init: "N02"
+  skip_init: false
+
+  # Optimizer
+  G_lr: 2e-4
+  D_lr: 2e-4
+  G_B1: 0.0
+  D_B1: 0.0
+  G_B2: 0.999
+  D_B2: 0.999
+
+  # Batch, parallelism, precision
+  num_G_accumulations: 1
+  num_D_steps: 4
+  num_D_accumulations: 1
+  split_D: false
+  accumulate_stats: false
+  num_standing_accumulations: 16
+
+  # EMA
+  ema: false
+  ema_decay: 0.9999
+  use_ema: false
+  ema_start: 1000
+
+  # Numerical precision and SV logging
+  adam_eps: 1.0e-08
+  BN_eps: 1.0e-12
+  SN_eps: 1.0e-12
+  num_G_SVs: 1
+  num_D_SVs: 1
+  num_G_SV_itrs: 1
+  num_D_SV_itrs: 1
+
+  device: *device
+
+  G_eval_mode: true
+
+  batch_size: &batch_size 50
+
+  fp16: false
+
+  # Evaluation settings
+  enable_eval: true  # Set to true to enable IS/FID evaluation (requires inception network)
+  eval_every: 1000    # Evaluate every N optimizer steps (set to null/0 to disable)
+  num_inception_images: 50000  # Number of generated images to use for IS/FID calculation
+  eval_moments_file: "data/cifar10_inception_moments.npz"
+
+# General training/runtime settings that fit the shared Config schema in src/distqat/config.py
+data:
+  # This section uses the generic schema; keep it minimal/general.
+  dataset_name: "uoft-cs/cifar10"  # Logical dataset name; BigGAN specifics go under biggan: below
+  dataset_config: null
+  dataset_split: "train"
+  num_workers: 0
+  precision: "32-true"   # Overall compute precision; BigGAN has its own fp16 flags below
+  task_type: "image_gen"
+  num_classes: 10
+  model_name: "BigGAN"
+
+diloco:
+  inner_optim:
+    type: "biggan"
+    biggan_G_lr: 2e-4
+    biggan_D_lr: 2e-4
+    biggan_G_B1: 0.0
+    biggan_D_B1: 0.0
+    biggan_G_B2: 0.999
+    biggan_D_B2: 0.999
+    biggan_adam_eps: 1.0e-08
+    biggan_model_config: *biggan_config
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.07
+    sgd_momentum: 0.9
+    sgd_nesterov: true
+  inner_steps: 500
+  outer_steps: 100
+  batch_size_per_step: *batch_size
+  min_refresh_period: 5.0
+  max_refresh_period: 30.0
+  averaging_timeout: 60.0
+  verbose: true
+
+model_pipeline:
+  pipeline:
+    - model_name: "biggan.full"
+      num_classes: 10
+      extra: *biggan_config
+  forward_timeout: 900.0
+  backward_timeout: 1800.0
+
+
+

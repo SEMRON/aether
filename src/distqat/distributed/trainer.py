@@ -71,6 +71,17 @@ class SwarmTrainer:
         register_process(self.model.dht, self.config.experiment_prefix, ttl=300.0)
         self.shm_client = DataClient(host=self.config.data_server.ipc_host, port=int(self.config.data_server.ipc_port), authkey=self.config.data_server.ipc_key.encode())
 
+        self.batch_size = self.config.diloco.batch_size_per_step
+        self.gradient_accumulation_steps = self.config.diloco.gradient_accumulation_steps
+        
+        effective_batch = self.batch_size * self.gradient_accumulation_steps
+        logger.info(f"Trainer configured with:")
+        logger.info(f"  - Micro-batch size: {self.batch_size}")
+        logger.info(f"  - Accumulation steps: {self.gradient_accumulation_steps}")
+        logger.info(f"  - Effective batch size: {effective_batch}")
+        
+        self.remaining_batch = None
+        self.remaining_release = None
 
     def parameters(self):
         yield from self.model.parameters()
@@ -90,6 +101,8 @@ class SwarmTrainer:
                 reduction="none",
             )
             loss = loss.mean()
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.warning(f"Found {loss.item()} loss in llm task!")
             return loss
         elif self.config.data.task_type == "speech":
             attention_mask = torch.ones_like(inputs, dtype=torch.long)
@@ -114,26 +127,93 @@ class SwarmTrainer:
                     reduction="mean",
                 )
             return loss
+        elif self.config.data.task_type == "image_gen":
+            D_loss, G_loss = outputs['D_loss'], outputs['G_loss']
+            D_loss.backward()
+            G_loss.backward()
         else:
             raise ValueError(f"Unknown task type: {self.config.data.task_type}")
 
 
     def step(self, inner_step: int, step: int):
-        batch, release = self.shm_client.next_batch()
-        inputs = batch["inputs"]
-        labels = batch["labels"]
-        if inner_step % 10 == 0:
-            logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps}")
+        inputs_list = []
+        labels_list = []
+        releases_to_call = []
         
-        outputs = self.model(inputs)
+        samples_needed = self.batch_size
+        
+        while samples_needed > 0:
+            if self.remaining_batch is None:
+                self.remaining_batch, self.remaining_release = self.shm_client.next_batch()
+            
+            current_inputs = self.remaining_batch["inputs"]
+            current_labels = self.remaining_batch["labels"]
+            available = current_inputs.shape[0]
+            
+            take = min(samples_needed, available)
+            
+            inputs_list.append(current_inputs[:take])
+            labels_list.append(current_labels[:take])
+            
+            samples_needed -= take
+            
+            if take == available:
+                releases_to_call.append(self.remaining_release)
+                self.remaining_batch = None
+                self.remaining_release = None
+            else:
+                self.remaining_batch["inputs"] = current_inputs[take:]
+                self.remaining_batch["labels"] = current_labels[take:]
+        
+        inputs = torch.cat(inputs_list)
+        labels = torch.cat(labels_list)
+        
+        for release in releases_to_call:
+            try:
+                release()
+            except Exception:
+                pass
+        
+        if inner_step % 10 == 0:
+            logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
+        
 
-        loss = self.task_type_loss(inputs, outputs, labels)
-        loss.backward()
-        self.model.post_optimizer_callback(step, loss.item())
-        try:
-            release()
-        except Exception:
-            pass
+        
+        if self.config.data.task_type == "image_gen":
+            num_D_steps = self.config.biggan["num_D_steps"]
+
+            outputs = self.model(inputs, labels)
+            D_loss, G_loss = outputs[0], outputs[-1]
+            D_loss = D_loss / self.gradient_accumulation_steps
+            G_loss = G_loss / self.gradient_accumulation_steps
+            
+            # Log individual losses for GAN training diagnostics
+            if inner_step % 10 == 0:
+                logger.info(f"Step {step}: D_loss={D_loss.item():.4f}, G_loss={G_loss.item():.4f}, D/G ratio={D_loss.item()/G_loss.item():.4f}, Sum={D_loss.item() + G_loss.item():.4f}")
+            
+            D_loss.backward(retain_graph=inner_step % num_D_steps == 0)
+            if inner_step % num_D_steps == 0:
+                G_loss.backward()
+            # Logging the sum for monitoring although it's not a meaningful metric
+            loss = D_loss + G_loss
+        else:
+            outputs = self.model(inputs)
+            loss = self.task_type_loss(inputs, outputs, labels)
+            loss = loss / self.gradient_accumulation_steps
+            loss.backward()
+
+        # Only step optimizer if we have accumulated enough gradients
+        if self.use_baseline_model:
+            # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
+            if (inner_step + 1) % self.gradient_accumulation_steps == 0:
+                self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
+        else:
+            # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
+            self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
+
+        if self.config.data.task_type == "image_gen":
+            if inner_step % self.config.biggan["eval_every"] == 0:
+                self.model.evaluate(step)
 
     def train(self):
         logger.info(f"============= Training for {self.num_total_steps} steps =============")
@@ -196,10 +276,12 @@ class SwarmTrainer:
             # Inner loop: exactly inner_steps batches for this peer
             inner = 0
 
-            while inner < inner_steps:
+            while inner < inner_steps*self.gradient_accumulation_steps:
                 self.step(inner_step=inner, step=step)
                 
-                step += 1
+                # Only increment global step (optimizer step) when we actually stepped
+                if (inner + 1) % self.gradient_accumulation_steps == 0:
+                    step += 1
                 inner += 1
                 if step >= self.num_total_steps:
                     break

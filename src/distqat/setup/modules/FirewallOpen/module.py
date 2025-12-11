@@ -17,6 +17,7 @@ class FirewallOpenModule(Module):
         cmds: List[str] = []
 
         if cfg.os.id == Distro.UBUNTU:
+            cmds.append("if ! command -v ufw &> /dev/null; then echo 'Installing ufw...'; apt-get update && apt-get install -y ufw; fi")
             # because running the following commands might start the firewall, even if not previously running
             cmds.append("ufw allow ssh")
             for spec in cfg.open_ports:
@@ -26,17 +27,17 @@ class FirewallOpenModule(Module):
                     cmds.append(f"ufw allow {rng.replace('-', ':')}/{proto}")
             cmds.append("ufw --force enable")
         elif cfg.os.platform_id in [
-            str(x) for x in [
-                Platform.FEDORA_39,
-                Platform.FEDORA_40,
-                Platform.FEDORA_41,
-                Platform.FEDORA_42,
-                Platform.ENTERPRISE_LINUX_8,
-                Platform.ENTERPRISE_LINUX_9,
-                Platform.AMAZON_LINUX_2022,
-                Platform.AMAZON_LINUX_2023
-            ]
+            Platform.FEDORA_39,
+            Platform.FEDORA_40,
+            Platform.FEDORA_41,
+            Platform.FEDORA_42,
+            Platform.ENTERPRISE_LINUX_8,
+            Platform.ENTERPRISE_LINUX_9,
+            Platform.AMAZON_LINUX_2022,
+            Platform.AMAZON_LINUX_2023
         ]:
+            cmds.append("if ! command -v firewall-cmd &> /dev/null; then echo 'Installing firewalld...'; dnf install -y firewalld; fi")
+            cmds.append("systemctl enable --now firewalld")
             for spec in cfg.open_ports:
                 # spec like "100-65535/tcp" or "100/udp"
                 if "/" in spec:

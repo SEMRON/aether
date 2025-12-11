@@ -4,12 +4,12 @@ from pathlib import Path
 import glob
 from typing import List
 from datetime import datetime
-
 from .config import Server, JobConfig
 from .controller import Controller
 from .ssh_runner import SSHSession
 
 from .machine_setup import create_setup_tab
+
 
 class DistributedGui:
     def __init__(self, no_wandb: bool = False):
@@ -20,17 +20,18 @@ class DistributedGui:
         self.controller.error_callback = self.on_error
         self.controller.error_reset_callback = self.on_error_reset
 
-
         self.log_elements = {}  # server_name -> ui.log
-        self.worker_start_btns = {} # server_name -> ui.button
-        self.worker_status_indicators = {} # server_name -> ui.icon
-        self.detected_errors = [] # List of error dicts
+        self.worker_start_btns = {}  # server_name -> ui.button
+        self.worker_status_indicators = {}  # server_name -> ui.icon
+        self.detected_errors = []  # List of error dicts
+        self.seen_error_keys = set()  # Set of (source, message) tuples to track duplicates
 
         self.setup_ui()
         self.refresh_server_list()  # Initial refresh to populate from loaded state
 
     def on_error_reset(self, source: str):
-        # Remove all errors from this source
+        # Remove all errors from this source, but keep them in seen_error_keys
+        # so they won't be reported again if the same error is detected
         original_count = len(self.detected_errors)
         self.detected_errors = [e for e in self.detected_errors if e['source'] != source]
         if len(self.detected_errors) != original_count:
@@ -39,15 +40,20 @@ class DistributedGui:
     def on_error(self, event):
         # event is dict: {source, message, context, timestamp}
 
-        # Check if we already have an error for this source
-        # Only keep one error per source to avoid flooding
-        if any(e['source'] == event['source'] for e in self.detected_errors):
+        # Create a unique key for this error based on source and message
+        # Normalize message by stripping whitespace to handle minor variations
+        error_key = (event['source'], event['message'].strip())
+        
+        if error_key in self.seen_error_keys:
             return
+
+        # Mark this error as seen
+        self.seen_error_keys.add(error_key)
 
         self.detected_errors.insert(0, event) # Add to top
         # Keep list size manageable
         if len(self.detected_errors) > 100:
-            self.detected_errors.pop()
+            removed = self.detected_errors.pop()
 
         # Update UI if it exists
         if hasattr(self, 'error_list'):
@@ -69,11 +75,11 @@ class DistributedGui:
                 self.error_list.clear()
                 with self.error_list:
                     for err in self.detected_errors:
-                        with ui.expansion(f"{err['timestamp']} - {err['source']}", icon='error').classes('w-full bg-red-50'):
+                        with ui.expansion(f"{err['timestamp']} - {err['source']}", icon='error').classes('w-full bg-red-900 text-white'):
                             with ui.column().classes('p-2'):
-                                ui.label(f"Message: {err['message']}").classes('font-bold text-red-800')
-                                ui.label("Context:").classes('font-bold mt-2')
-                                ui.code(err['context']).classes('w-full')
+                                ui.label(f"Message: {err['message']}").classes('font-bold text-red-100')
+                                ui.label("Context:").classes('font-bold mt-2 text-gray-200')
+                                ui.code(err['context']).classes('w-full bg-black text-red-200')
 
     def on_server_status(self, server_name: str, is_running: bool):
         if server_name in self.worker_status_indicators:
@@ -121,11 +127,11 @@ class DistributedGui:
                     tab = ui.tab(name)
                 with self.log_panels:
                     with ui.tab_panel(tab):
-                        with ui.row().classes('w-full justify-between items-center p-2 bg-gray-50'):
+                        with ui.row().classes('w-full justify-between items-center p-2'):
                             ui.label(f"Session: {name}").classes('font-bold')
                             async def stop_node(n=name):
                                 await self.controller.stop_task(n)
-                            ui.button('Stop Node', on_click=stop_node, color='red-4').classes('text-white px-4')
+                            ui.button('Stop Node', on_click=stop_node, color='negative').classes('text-white px-4')
 
                             self.log_elements[name] = ui.column().classes('w-full h-full font-mono text-sm bg-black text-white p-2 overflow-y-auto gap-0')
 
@@ -160,17 +166,18 @@ class DistributedGui:
                                 n_servers = ui.number('Servers', value=s.num_servers, min=1, format='%.0f',
                                                     on_change=lambda e, s=s: update_server_config(s, 'num_servers', int(e.value))).classes('w-20').tooltip('Number of servers to be started')
 
-
-
                                 batch_sz = ui.number('Batch', value=s.batch_size, min=1, format='%.0f',
                                                    on_change=lambda e, s=s: update_server_config(s, 'batch_size', int(e.value))).classes('w-20').tooltip('Batch Size')
+                                
+                                inner_steps = ui.number('Inner Steps', value=s.inner_steps, min=1, format='%.0f',
+                                                   on_change=lambda e, s=s: update_server_config(s, 'inner_steps', int(e.value))).classes('w-20').tooltip('Inner Steps')
 
 
                             with ui.row().classes('gap-2'):
                                 async def start(name=s.display_name):
                                     server = self.controller.get_server(name)
                                     try:
-                                        await self.controller.start_worker_nodes([name], server.num_servers, server.device, server.batch_size, server.grpc_announce_port)
+                                        await self.controller.start_worker_nodes([name], server.num_servers, server.device, server.batch_size, server.inner_steps, server.grpc_announce_port, server.mapped_host_port)
                                         self.update_log_views()
                                         ui.notify(f"Started worker on {name}")
                                     except Exception as e:
@@ -189,12 +196,13 @@ class DistributedGui:
                                      sessions = [sid for sid, sess in self.controller.sessions.items() if sess.server.display_name == name]
                                      if not sessions:
                                          ui.notify(f"No active sessions found for {name}", type='warning')
+                                         await self.controller.stop_task(name)
                                          return
                                      for sid in sessions:
                                          await self.controller.stop_task(sid)
                                      ui.notify(f"Stopped workers on {name}")
 
-                                ui.button('Stop', on_click=stop, color='red-4').classes('small')
+                                ui.button('Stop', on_click=stop, color='warning').classes('small')
 
         if hasattr(self, 'server_table'):
             rows = []
@@ -284,7 +292,7 @@ class DistributedGui:
                 self.log_tabs.value = list(self.log_elements.keys())[0]
 
     def setup_ui(self):
-        with ui.header().classes('bg-primary text-white') as header:
+        with ui.header().style('background-color: #121212;') as header:
             self.header = header
             ui.label('DistQAT Control Center').classes('text-h5')
 
@@ -317,8 +325,10 @@ class DistributedGui:
 
                         with ui.row().classes('w-2/3 gap-2'):
                             self.device_input = ui.select(['cpu', 'cuda', 'rocm'], value='cpu', label='Device').classes('w-1/3')
-                            self.grpc_port_input = ui.number('GRPC Port', placeholder='Auto', format='%.0f').classes('w-1/3').tooltip('Base GRPC Announce Port')
-                            self.monitor_port_input = ui.number('Monitor Port', placeholder='Default', format='%.0f').classes('w-1/3').tooltip('Mapped Monitor Port')
+                            with ui.expansion("Port mapping", icon="lan").classes("w-full flex-1"):
+                                self.grpc_port_input = ui.number('GRPC Port', placeholder='Auto', format='%.0f').classes('w-full').tooltip('Base GRPC Announce Port')
+                                self.monitor_port_input = ui.number('Monitor Port', placeholder='Default', format='%.0f').classes('w-full').tooltip('Mapped Monitor Port')
+                                self.host_port_input = ui.number('Host Port', placeholder='Default', format='%.0f').classes('w-full').tooltip('Mapped Server Host Port (for DHT peer discovery)')
 
                         self.editing_server_name = None
 
@@ -332,6 +342,7 @@ class DistributedGui:
                             self.device_input.value = 'cpu'
                             self.grpc_port_input.value = None
                             self.monitor_port_input.value = None
+                            self.host_port_input.value = None
                             self.editing_server_name = None
                             self.add_btn.text = 'Add Server'
 
@@ -345,7 +356,8 @@ class DistributedGui:
                                 name=self.name_input.value.strip() if self.name_input.value else None,
                                 device=self.device_input.value,
                                 grpc_announce_port=int(self.grpc_port_input.value) if self.grpc_port_input.value else None,
-                                mapped_monitor_port=int(self.monitor_port_input.value) if self.monitor_port_input.value else None
+                                mapped_monitor_port=int(self.monitor_port_input.value) if self.monitor_port_input.value else None,
+                                mapped_host_port=int(self.host_port_input.value) if self.host_port_input.value else None
                             )
 
                             if self.editing_server_name:
@@ -401,6 +413,7 @@ class DistributedGui:
                                     self.device_input.value = server.device
                                     self.grpc_port_input.value = server.grpc_announce_port
                                     self.monitor_port_input.value = server.mapped_monitor_port
+                                    self.host_port_input.value = server.mapped_host_port
 
                                     self.editing_server_name = name
                                     self.add_btn.text = 'Update Server'
@@ -441,7 +454,7 @@ class DistributedGui:
 
                         with ui.row().classes('w-full gap-2'):
                             ui.button('Edit Selected Server', on_click=edit_server, color='primary').classes('flex-1')
-                            ui.button('Delete Selected Server', on_click=delete_server, color='red-4').classes('flex-1')
+                            ui.button('Delete Selected Server', on_click=delete_server, color='warning').classes('flex-1')
 
                         async def test_ssh_conn():
                             if self.server_table.selected:
@@ -465,17 +478,40 @@ class DistributedGui:
 
                         # Scan for configs
                         config_files = glob.glob("configs/*.yaml")
+                        config_files = [f for f in config_files if not f.endswith("template_config.yaml")]
                         config_select = ui.select(config_files, label='Config File', value=self.controller.state.last_job_config.config_path).classes('w-full')
 
                         wandb_key = ui.input('WandB API Key', password=True).classes('w-full')
                         if self.controller.state.last_job_config.wandb_api_key:
                             wandb_key.value = self.controller.state.last_job_config.wandb_api_key
 
+                        hf_token_input = ui.input('HuggingFace Token', password=True).classes('w-full')
+                        if getattr(self.controller.state.last_job_config, "hf_token", None):
+                            hf_token_input.value = self.controller.state.last_job_config.hf_token
+
                         ui.separator().classes('my-4')
 
                         ui.label('Head Node (Client/Monitor)').classes('text-h6')
                         with ui.row().classes('w-full gap-2'):
                             self.server_select = ui.select([], label='Select Head Node').classes('flex-1')
+                            async def start_head():
+                                cfg = JobConfig(
+                                    config_path=config_select.value,
+                                    wandb_api_key=wandb_key.value,
+                                    hf_token=hf_token_input.value or None,
+                                )
+                                await self.controller.start_head_node(self.server_select.value, cfg)
+                                self.update_log_views()
+                                self.peers_display.content = "Waiting for peers..."
+
+                            ui.button('Start Head Node', on_click=start_head, color='primary')
+                            async def stop_head():
+                                await self.controller.stop_task(self.server_select.value)
+                                self.update_log_views()
+                                self.peers_display.content = "Head node stopped"
+                                ui.notify(f"Head node stopped on {self.server_select.value}")
+
+                            ui.button('Stop Head Node', on_click=stop_head, color='warning')
 
                         ui.separator().classes('my-2')
                         ui.label('Worker Nodes').classes('text-h6')
@@ -486,45 +522,36 @@ class DistributedGui:
                         ui.label('Controls').classes('text-h6')
 
                         with ui.row():
-                            async def start_head():
-                                cfg = JobConfig(
-                                    config_path=config_select.value,
-                                    wandb_api_key=wandb_key.value
-                                )
-                                await self.controller.start_head_node(self.server_select.value, cfg)
-                                self.update_log_views()
-                                self.peers_display.content = "Waiting for peers..."
-
-                            ui.button('1. Start Head Node', on_click=start_head, color='primary')
+                            
 
                             async def start_all_workers():
                                 for s in self.controller.state.servers:
                                     try:
-                                        await self.controller.start_worker_nodes([s.display_name], s.num_servers, s.device, s.batch_size, s.grpc_announce_port)
+                                        await self.controller.start_worker_nodes([s.display_name], s.num_servers, s.device, s.batch_size, s.inner_steps, s.grpc_announce_port, s.mapped_host_port)
                                         ui.notify(f"Started worker on {s.display_name}")
                                     except Exception as e:
                                         ui.notify(f"Failed to start {s.display_name}: {e}", type='negative')
                                 self.update_log_views()
 
-                            self.start_all_btn = ui.button('2. Start All Workers', on_click=start_all_workers, color='primary')
+                            self.start_all_btn = ui.button('Start All Workers', on_click=start_all_workers, color='primary')
                             self.start_all_btn.disable()
 
                             async def stop_all():
                                 await self.controller.stop_all()
                                 self.peers_display.content = "Stopped"
 
-                            self.stop_all_btn = ui.button('STOP ALL', on_click=stop_all, color='red-4')
+                            self.stop_all_btn = ui.button('STOP ALL', on_click=stop_all, color='warning')
                             self.stop_all_btn.disable()
 
                         async def reset_all():
                              await self.controller.reset_all_processes()
                              self.peers_display.content = "Reset"
 
-                        ui.button('Reset all processes', on_click=reset_all, color='red-10').classes('text-white w-1/3 mt-2')
+                        ui.button('Reset all processes', on_click=reset_all, color='warning').classes('text-white w-1/3 mt-2')
 
                         ui.label('Initial Peers:').classes('text-lg mt-4 font-bold')
                         with ui.row().classes('w-full items-center gap-2 bg-gray-100 p-2 rounded mb-4'):
-                            self.peers_display = ui.code('Not started').classes('flex-1')
+                            self.peers_display = ui.code('Not started').classes('flex-1 text-white bg-black')
 
 
                         # Update peers label periodically
@@ -552,8 +579,12 @@ class DistributedGui:
                 # Error Watcher
                 with ui.card().classes('w-full mb-4 border-l-4 border-red-500'):
                     with ui.row().classes('w-full justify-between items-center'):
-                        ui.label('Error Watcher').classes('text-h6 text-red-700')
-                        ui.button('Clear', on_click=lambda: (self.detected_errors.clear(), self.refresh_error_list()), color='grey').classes('small')
+                        ui.label('Error Watcher').classes('text-h6 text-red-500')
+                        def clear_errors():
+                            self.detected_errors.clear()
+                            self.seen_error_keys.clear()
+                            self.refresh_error_list()
+                        ui.button('Clear', on_click=clear_errors).classes('small')
 
                     self.error_list = ui.column().classes('w-full gap-1 overflow-y-auto max-h-80')
                     self.refresh_error_list()
@@ -602,7 +633,7 @@ class DistributedGui:
                         with self.file_dialog, ui.card().classes('w-3/4 max-w-6xl h-3/4'):
                             with ui.row().classes('w-full justify-between items-center'):
                                 self.file_title = ui.label('File Content').classes('text-h6')
-                                ui.button('Close', on_click=self.file_dialog.close, color='red-4')
+                                ui.button('Close', on_click=self.file_dialog.close, color='warning')
                             self.file_content = ui.column().classes('w-full h-full font-mono text-sm bg-black text-white p-2 overflow-y-auto gap-0')
 
                         self.files_table.add_slot('body-cell-name', r'''
@@ -654,8 +685,7 @@ class DistributedGui:
                         self.wandb_link.props['href'] = "https://wandb.ai"
 
                 ui.timer(2.0, update_wandb_link)
-
-
+            
 
 def init_ui(no_wandb: bool = False):
     DistributedGui(no_wandb)

@@ -3,6 +3,7 @@ import math
 
 import torch as t
 from pydantic import BaseModel
+from hivemind.utils.logging import get_logger
 
 from distqat.utils.quantizer import (
     calculate_bounds,
@@ -13,6 +14,7 @@ from ..base import Quantizer
 from ..meta_tensor import MetaTensor
 from ..registry import register_quantizer
 
+logger = get_logger(__name__)
 
 class LSQParams(BaseModel):
     pass
@@ -56,7 +58,7 @@ class LearnedStepQuantizer(Quantizer):
         # which would lead to miss-initialized quantizer step_size
         threshold = 1e-6
         if mean_abs <= threshold:
-            print(
+            logger.debug(
                 f"NOTE: Skipping initialization of LearnedStepQuantizer, mean_abs <= {threshold}. "
                 f"This is expected for the dummy forward pass from the ExpertBackends."
             )

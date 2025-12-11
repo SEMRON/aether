@@ -5,9 +5,11 @@ Get up and running with DistQat in 5 minutes!
 ## Prerequisites
 
 - Python 3.10+
-- Linux OS (Tested on Ubuntu 24.04, should work on others as well)
+- Linux OS (Most extensively tested on Ubuntu 22.04 and 24.04 but should work on others as well)
 - If using a CUDA- or ROCM-capable GPU you need to install the CUDA or ROCM drivers first
+- Allow TCP Ports to be open and accept incoming connection from outside (Ports: 50000-60000 for simplicity or otherwise 50000, 51000, 50500, 51500 are the minimum ports that should be open)
 - Optional but highly recommended (especially for the GUI): A WandB account
+- Huggingface Token that has access rights to ImageNet1k (https://huggingface.co/datasets/ILSVRC/imagenet-1k) if you want to train on it (eg. ResNet50 config)
 
 ## 1. Installation (On every machine you want to use)
 
@@ -15,29 +17,30 @@ Connect to your machine that you want to use for the distributed training and th
 
 ```bash
 # Clone repository
-git clone https://github.com/SEMRON/distqat.git
+git clone https://github.com/SEMRON/aether.git distqat
+cd distqat
 
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Source the shell again or start a new shell to make uv available
+source $HOME/.local/bin/env
 
 # Create environment
-cd distqat
 uv venv --python=3.10
 source .venv/bin/activate
 
-# Install using make, default should work on most machines CPU and Nvidia CUDA
-make install
+# If on a CUDA machine
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
-# or for AMD ROCM
-# make install-rocm
+# If on a ROCM capable AMD machine
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.0
 
-# or you can also adapt the Makefile to change the correct index file 
+# If on a CPU
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-# or simply run 
-# uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu129
-# uv pip install -e .
+# Install distqat
+uv pip install -e .
 
 wandb login
 
@@ -58,8 +61,7 @@ python run_local.py --config-path configs/resnet18.yaml --wandb-project None
 python run_local.py --config-path configs/resnet18_split.yaml --num-servers 2
 ```
 
-After waiting a few seconds up 
-If you see console logs that are similar to this:
+After waiting a few seconds up to a minute if you see console logs that are similar to this:
 ```
 Nov 26 17:29:58.382 [INFO] Complete pipeline found for expert_index 0: ['head', 'tail']
 Nov 26 17:29:58.382 [INFO] Complete pipeline found for expert_index 1: ['head', 'tail']
@@ -83,7 +85,7 @@ Nov 26 17:29:58.383 [INFO] [Step 0]
 
 it means the installation and local training is working as expected and you can cancel the Training with `ctrl+c`.
 
-## 4. Distributed Training using the Command Line
+## 3. Distributed Training using the Command Line
 
 ### On Machine 1 (Coordinator):
 
@@ -105,36 +107,8 @@ python start_servers.py \
 
 Now after some time passes you should see output similar to the `local_run` on the coordinator node. If not something might have gone wrong so it would be a good idea to check the log files in `logs/*` on the different machines and refer to [Common Issues](#common-issues) or look into the full documentation. 
 
-## 4. Using the GUI for Distributed Training
-The GUI is still experimental so some unexpected bugs may arise. However it creates a unified interface that allows you to see all the logs from the different machines in one place, remotely install the framework on your different machines and in general can be helpful to get a better overview of the workflow.
-
-Start the GUI on your local machine/ a machine not used for training since it works by SSH'ing into the machines used for training and cannot currently "SSH into itself". This machine needs to be able to access the other machines you want to use for training via SSH. If the other machines are secured through private/ public keys, then you must specify the path to that key file in the GUI when adding one of your servers.
-
-```bash
-python run_gui.py [--port <your_preferred_port, 8080 by default>]
-```
-Also check the std output in the terminal of the GUI process, since some errors might only get shown there. In general however, errors should be shown in the GUI itself.
-
-If running it on a remote machine, you might need to open port forwarding to be able to view the GUI on your local browser:
-```bash
-# 8080 port is set by default, otherwise specify your preferred port you used when running the GUI
-ssh -L 8080:localhost:8080 root@xx.xx.xx.xx
-```
-
-In the Server tab of the GUI you can add the data of the machines you want to use for the distributed Training. The machines either need to already have the framework installed as described in [Installation](#1-installation-on-every-machine-you-want-to-use-) or can be remotely installed by pressing the `Create Server Setup` button after selecting a server and then following the instructions, i.e. clicking `Generate` and then `Run Setup Script on Server`. Check the output in the GUI and if no error occured, then it should be correctly installed on the machine.
-
-In the Orchestrator Tab you can then setup and start the distributed Training.
-First you need to start a Head node on one of your machines, this will be the initial peer the worker servers will connect to. At the same time it will also start the monitor which will log the training progress. For this to work seemlessly, specify your WandB API key in the specified field. 
-
-After having started the head node and received the initial peer address, you can start your servers to start the training process. During a training process you can always add a new server and join the ongoing training process.
-
-After starting the training you can switch to the Monitor tab to keep track of your training progress and do some error checking in case anything goes wrong. The log files of the different processes and machines are gathered on WandB and downloaded to the GUI so that the can be live inspected. The Error watcher regularly scans the process and server logs for any errors for a quick overview. Note that it is just a simple error watcher and errors shown here do not necessarily mean, the Training is failing but it can still be a good first insight if something is not working as expected.
-
-Currently, the training stops if the GUI is reloaded.
-
-**Note:** You need to have some ports open for the distributed training to work. For more information on which ports to be open, see [Port Assignment Pattern](diagrams/NODE_ARRANGEMENT.md#port-assignment-pattern).
-If the port is open but it is mapped to a different external port you can specify that port by editing the GRPC field for that server in the orchestrator.
-
+## 4. Examples
+The `resnet18` config should work easily on most machines and does not have much requirements on the hardware. If you want to test out the pipeline parallelism on a small model, then use `resnet18_split.yaml`. This configuration splits the Resnet18 model into two stages. So you need at least 2 servers to train the model. 
 
 ## 5. Advanced 
 Now if everything works as expected you can dive deeper into the distributed Training. You can test out different models with the GUI based on the provided config files in `configs/*.yaml` or write your own config file. You could also try to implement your own model, although depending on the model complexity that could be more or less challenging. Refer to [Advanced Topics in the README](./README.md#advanced-topics)
@@ -169,6 +143,10 @@ If there is port mapping then specify the external port by setting `network-serv
 ### Failed to connect to bootstrap peer
 Check if the IP address of the initial peers is correct and the port is accessible. If port mapping is used then after copying the initial peers you need to change the port so from:
 e.g.: `/ip4/213.173.111.105/tcp/50000/p2p/QmPkcZiABVfu41yA3qTF1LpmB9z2ZqjuwjJi2TeBj6fZd6` to `/ip4/213.173.111.105/tcp/<mapped port>/p2p/QmPkcZiABVfu41yA3qTF1LpmB9z2ZqjuwjJi2TeBj6fZd6`
+
+### Hugging face authentication error
+`datasets.exceptions.DatasetNotFoundError: Dataset 'ILSVRC/imagenet-1k' is a gated dataset on the Hub. You must be authenticated to access it.`
+If you get this error it means the dataset you're trying to use is gated and you need to log in to hugging face either by calling `hf auth login` in the terminal or passing `HF_TOKEN` as an environment variable to your machine.
 
 ### Installation SSL: Certificate error 
 ```

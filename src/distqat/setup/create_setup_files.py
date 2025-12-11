@@ -211,7 +211,9 @@ def emit_bash_script(cfg: Config, modules: List[Module], guard: bool = True) -> 
                         echo "Skipping sudo attempt"
                     fi
                 else
-                    echo "Not on interactive shell, skipping sudo attempt"
+                    # echo "Not on interactive shell, skipping sudo attempt"
+                    echo "Attempting to run with sudo..."
+                    sudo bash -c "$(declare -f install_script); install_script"
                 fi
             fi
         """).strip().split("\n"))

@@ -1,0 +1,8 @@
+# skypilot file sync ignore file
+
+# keep the secrets local
+/keys/
+
+# don't syn'c python/uv virtual environments
+/.venv
+/venv
