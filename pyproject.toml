@@ -35,6 +35,13 @@ gpuspecific = [
   "torchaudio",
   "torchcodec",
 ]
+amdgpuspecific = [
+  "torch>=2.9",
+  "torchvision",
+  "torchaudio",
+  "torchcodec",
+  "pytorch-triton-rocm==3.5.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
