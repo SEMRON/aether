@@ -90,9 +90,15 @@ def main(num_servers: int, public_ip: Optional[str], config_path: str, network_i
 
     merged_cfg = cfg.model_validate(merged_dict)
     
-    # Handle legacy comma-separated string for initial peers
     if network_initial_peers is not None:
-        merged_cfg.network.initial_peers = [p.strip() for p in network_initial_peers.split(",") if p.strip()]
+        try:
+            parsed_json = json.loads(network_initial_peers)
+            if isinstance(parsed_json, list):
+                merged_cfg.network.initial_peers = parsed_json
+            else:
+                merged_cfg.network.initial_peers = [p.strip() for p in network_initial_peers.split(",") if p.strip()]
+        except (json.JSONDecodeError, ValueError):
+            merged_cfg.network.initial_peers = [p.strip() for p in network_initial_peers.split(",") if p.strip()]
     
     initial_peers = merged_cfg.network.initial_peers
     

@@ -319,9 +319,12 @@ class SwarmClient:
             try:
                 os.kill(self.data_server_proc.pid, signal.SIGINT)
                 self.data_server_proc.wait(timeout=10.0)
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
                 logger.warning("Data server did not stop gracefully, forcing termination")
-                os.kill(self.data_server_proc.pid, signal.SIGKILL)
+                try:
+                    os.kill(self.data_server_proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
         
         if self._param_mirror is not None:
             self._param_mirror.stop()

@@ -282,13 +282,14 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
         accumulate_grads_on: Optional[torch.device] = None,
         client_mode: bool = False,
         verbose: bool = False,
+        expert: Optional[torch.nn.Module] = None,
         **kwargs,
     ):
         # convert params to list to provide params to both optimizers
         params_list = list(params)
     
         if isinstance(inner_optimizer, Callable):
-            inner_optimizer = inner_optimizer(params=params_list)
+            inner_optimizer = inner_optimizer(params=params_list, expert=expert) if expert is not None else inner_optimizer(params=params_list)
         if isinstance(outer_optimizer, Callable):
             self.outer_optimizer = outer_optimizer(params=params_list)
 

@@ -6,6 +6,7 @@ from torch.optim import Optimizer as TorchOptimizer
 from distqat.distributed.optim.collaborative import CollaborativeOptimizer
 from distqat.distributed.optim.diloco import DiLoCoOptimizer
 from distqat.config import OptimConfig, DilocoConfig
+from distqat.models.biggan.biggan_adapter import InnerGANOptimizer
 
 def get_optimizer_factory(config: OptimConfig) -> Callable[[Iterable[torch.nn.Parameter]], torch.optim.Optimizer]:
     if config.type == "adam":
@@ -22,6 +23,32 @@ def get_optimizer_factory(config: OptimConfig) -> Callable[[Iterable[torch.nn.Pa
             momentum=config.sgd_momentum,
             nesterov=config.sgd_nesterov,
         )
+    elif config.type == "biggan":
+        def factory(*, params, expert, **kwargs):
+            params = list(params)
+            G_set = set(expert.G.parameters())
+            D_set = set(expert.D.parameters())
+            G_params = [p for p in params if p in G_set]
+            D_params = [p for p in params if p in D_set]
+            param_groups = [{"params": G_params, "role": "G"}, {"params": D_params, "role": "D"}]
+            return InnerGANOptimizer(
+                param_groups=param_groups,
+                g_opt_ctor=torch.optim.Adam,  # or AdamW
+                g_opt_kwargs=dict(
+                    lr=config.biggan_G_lr,
+                    betas=(config.biggan_G_B1, config.biggan_G_B2),
+                    eps=config.biggan_adam_eps,
+                    # weight_decay=config.biggan_G_wd,
+                ),
+                d_opt_ctor=torch.optim.Adam,
+                d_opt_kwargs=dict(
+                    lr=config.biggan_D_lr,
+                    betas=(config.biggan_D_B1, config.biggan_D_B2),
+                    eps=config.biggan_adam_eps,
+                    # weight_decay=getattr(config, "biggan_D_wd", 0.0),
+                ),
+            )
+        return factory
     else:
         raise ValueError(f"Optimizer {config.type} not found")
 

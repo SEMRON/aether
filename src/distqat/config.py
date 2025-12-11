@@ -1,6 +1,7 @@
-from typing import Optional, Literal, List, Callable
+from typing import Optional, Literal, List, Callable, Dict, Any
 from typing import List, Optional
 
+import json
 import click
 from pydantic import BaseModel, Field, PositiveInt, PrivateAttr, computed_field
 from pydantic import field_validator
@@ -52,7 +53,7 @@ class DataConfig(BaseModel):
 
 
 class OptimConfig(BaseModel):
-    type: Literal["sgd", "adam"] = "sgd"
+    type: Literal["sgd", "adam", "biggan"] = "sgd"
     
     # Parameters for SGD
     sgd_lr: float = 0.7
@@ -64,6 +65,16 @@ class OptimConfig(BaseModel):
     adam_weight_decay: float = 0.1
     adam_betas1: float = 0.9
     adam_betas2: float = 0.95
+
+    # Parameters for BigGAN
+    biggan_G_lr: float = 2e-4
+    biggan_D_lr: float = 2e-4
+    biggan_G_B1: float = 0.0
+    biggan_D_B1: float = 0.0
+    biggan_G_B2: float = 0.999
+    biggan_D_B2: float = 0.999
+    biggan_adam_eps: float = 1.0e-06
+    biggan_model_config: Dict[str, Any] = {}
 
 class DilocoConfig(BaseModel):
     inner_optim: OptimConfig = OptimConfig(type="adam")
@@ -209,9 +220,10 @@ class Config(BaseModel):
     param_mirror: ParamMirrorConfig = ParamMirrorConfig()
     data_server: DataServerConfig = DataServerConfig()
     checkpoint_dir: Optional[Path] = None
-
     log_dir: Path = Path("logs") / experiment_prefix
 
+    # Optional holder for model-specific configs (e.g., BigGAN CLI-style params)
+    biggan: Optional[Dict[str, Any]] = None
 
     # Attribute to store the config path
     path: Optional[str] = None
@@ -225,8 +237,9 @@ class Config(BaseModel):
 
 @click.command()
 @click.option("--config-path", type=str, default=None)
-@from_pydantic(Config)
-def parse_args(config_path: Optional[str], config: Config, **extra_kwargs):
+@click.option("--network-initial-peers", type=str, default=None, help="JSON array string or comma-separated list of initial peers")
+@from_pydantic(Config, exclude=["network.initial_peers"])
+def parse_args(config_path: Optional[str], network_initial_peers: Optional[str], config: Config, **extra_kwargs):
     if config_path is None:
         cfg = Config()
     else:
@@ -238,6 +251,17 @@ def parse_args(config_path: Optional[str], config: Config, **extra_kwargs):
 
     merged_cfg = cfg.model_validate(merged_dict)
     
+    # Handle network-initial-peers manually (try JSON first, then comma-separated)
+    if network_initial_peers is not None:
+        try:
+            parsed_json = json.loads(network_initial_peers)
+            if isinstance(parsed_json, list):
+                merged_cfg.network.initial_peers = parsed_json
+            else:
+                merged_cfg.network.initial_peers = [p.strip() for p in network_initial_peers.split(",") if p.strip()]
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"Failed to parse network-initial-peers: {e}")
+    
     if merged_cfg.device == "rocm":
         merged_cfg.device = "cuda"
 
@@ -245,4 +269,3 @@ def parse_args(config_path: Optional[str], config: Config, **extra_kwargs):
     merged_cfg.path = config_path
 
     return merged_cfg, extra_kwargs
-

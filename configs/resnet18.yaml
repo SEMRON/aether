@@ -42,7 +42,6 @@ model_pipeline:
 param_mirror:
   enable: false
   refresh_every: 300
-  checkpoint_dir: "checkpoints/resnet18"
 
 
 data_server:

@@ -393,7 +393,7 @@ class Controller:
         if self.status_callback:
             self.status_callback(f"Head node started on {server.display_name}")
 
-    async def start_worker_nodes(self, server_names: List[str], num_servers_per_node: int = 2, device: str = "cpu", batch_size: int = 32, inner_steps: int = 50, grpc_announce_port: Optional[int] = None, host_port: Optional[int] = None):
+    async def start_worker_nodes(self, server_names: List[str], num_servers_per_node: int = 1, device: str = "cpu", batch_size: int = 32, inner_steps: int = 500, grpc_announce_port: Optional[int] = None, host_port: Optional[int] = None):
         """Start worker nodes (servers)."""
         if not self.initial_peers:
             raise RuntimeError("Initial peers not yet received. Start head node first.")

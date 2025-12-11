@@ -225,7 +225,8 @@ class SwarmServer(threading.Thread):
         experts = {}
         for expert_uid in expert_uids:
             block_cls = name_to_block[expert_cls]
-            expert_kwargs = kwargs_from_config(block_cls.__init__, pipeline_step_cfg, cfg.data)
+            aliases = {"config": pipeline_step_cfg.extra} if len(pipeline_step_cfg.extra.keys()) > 0 else None
+            expert_kwargs = kwargs_from_config(block_cls.__init__, pipeline_step_cfg, cfg.data, aliases=aliases)
             expert = block_cls(**expert_kwargs)
             if quant_config is not None:    
                 logger.info(f"Attaching quantizers to expert {expert_uid}")
@@ -233,7 +234,10 @@ class SwarmServer(threading.Thread):
             else:
                 avg_only_params = []
             expert.to(device)
-            optim = optim_cls(params=expert.parameters(), avg_only_params=avg_only_params, **optim_kwargs, dht=dht)
+            if aliases is not None:
+                optim = optim_cls(params=expert.parameters(), avg_only_params=avg_only_params, expert=expert, **optim_kwargs, dht=dht)
+            else:
+                optim = optim_cls(params=expert.parameters(), avg_only_params=avg_only_params, **optim_kwargs, dht=dht)
             optim.load_state_from_peers()
             experts[expert_uid] = ExpertBackend(
                 name=expert_uid,

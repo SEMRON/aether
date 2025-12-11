@@ -26,7 +26,7 @@ diloco:
     sgd_nesterov: True
   inner_steps: 500
   outer_steps: 100
-  batch_size_per_step: 64
+  batch_size_per_step: 4
   min_refresh_period: 5.0
   max_refresh_period: 30.0
   averaging_timeout: 60.0
@@ -42,7 +42,6 @@ model_pipeline:
 param_mirror:
   enable: false
   refresh_every: 30
-  checkpoint_dir: "checkpoints/distilgpt2_full"
 
 world_size: 2
 device: "cuda"

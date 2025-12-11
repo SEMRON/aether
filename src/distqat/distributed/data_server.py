@@ -180,6 +180,7 @@ def run_server(cfg: Config):
     def _handle_signal(signum, frame):
         logger.info(f"Data server received signal {signum}, shutting down gracefully...")
         stop_evt.set()
+        raise KeyboardInterrupt("Signal received")
 
     # Ensure graceful shutdown on SIGINT/SIGTERM to free the port
     signal.signal(signal.SIGINT, _handle_signal)
@@ -219,6 +220,12 @@ def run_server(cfg: Config):
                         pass
     finally:
         pool.shutdown()
+        try:
+            work_q.cancel_join_thread()
+            free_q.cancel_join_thread()
+        except Exception:
+            pass
+
         mgr.shutdown()
 
 # ---------- CLI ----------

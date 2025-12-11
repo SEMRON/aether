@@ -68,11 +68,11 @@ class DistributedGui:
                 self.error_list.clear()
                 with self.error_list:
                     for err in self.detected_errors:
-                        with ui.expansion(f"{err['timestamp']} - {err['source']}", icon='error').classes('w-full bg-red-50'):
+                        with ui.expansion(f"{err['timestamp']} - {err['source']}", icon='error').classes('w-full bg-red-900 text-white'):
                             with ui.column().classes('p-2'):
-                                ui.label(f"Message: {err['message']}").classes('font-bold text-red-800')
-                                ui.label("Context:").classes('font-bold mt-2')
-                                ui.code(err['context']).classes('w-full')
+                                ui.label(f"Message: {err['message']}").classes('font-bold text-red-100')
+                                ui.label("Context:").classes('font-bold mt-2 text-gray-200')
+                                ui.code(err['context']).classes('w-full bg-black text-red-200')
 
     def on_server_status(self, server_name: str, is_running: bool):
         if server_name in self.worker_status_indicators:
@@ -158,8 +158,6 @@ class DistributedGui:
 
                                 n_servers = ui.number('Servers', value=s.num_servers, min=1, format='%.0f',
                                                     on_change=lambda e, s=s: update_server_config(s, 'num_servers', int(e.value))).classes('w-20').tooltip('Number of servers to be started')
-
-
 
                                 batch_sz = ui.number('Batch', value=s.batch_size, min=1, format='%.0f',
                                                    on_change=lambda e, s=s: update_server_config(s, 'batch_size', int(e.value))).classes('w-20').tooltip('Batch Size')
@@ -565,7 +563,7 @@ class DistributedGui:
                 # Error Watcher
                 with ui.card().classes('w-full mb-4 border-l-4 border-red-500'):
                     with ui.row().classes('w-full justify-between items-center'):
-                        ui.label('Error Watcher').classes('text-h6 text-red-700')
+                        ui.label('Error Watcher').classes('text-h6 text-red-500')
                         ui.button('Clear', on_click=lambda: (self.detected_errors.clear(), self.refresh_error_list())).classes('small')
 
                     self.error_list = ui.column().classes('w-full gap-1 overflow-y-auto max-h-80')

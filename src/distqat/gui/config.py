@@ -21,8 +21,8 @@ class Server(BaseModel):
     # Worker configuration
     num_servers: int = 1
     device: str = "cpu"
-    batch_size: int = 16
-    inner_steps: int = 50
+    batch_size: int = 64
+    inner_steps: int = 500
 
     @property
     def display_name(self) -> str:

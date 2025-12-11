@@ -17,6 +17,7 @@ class FirewallOpenModule(Module):
         cmds: List[str] = []
 
         if cfg.os.id == Distro.UBUNTU:
+            cmds.append("if ! command -v ufw &> /dev/null; then echo 'Installing ufw...'; apt-get update && apt-get install -y ufw; fi")
             # because running the following commands might start the firewall, even if not previously running
             cmds.append("ufw allow ssh")
             for spec in cfg.open_ports:

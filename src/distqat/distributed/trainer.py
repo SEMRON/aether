@@ -127,6 +127,10 @@ class SwarmTrainer:
                     reduction="mean",
                 )
             return loss
+        elif self.config.data.task_type == "image_gen":
+            D_loss, G_loss = outputs['D_loss'], outputs['G_loss']
+            D_loss.backward()
+            G_loss.backward()
         else:
             raise ValueError(f"Unknown task type: {self.config.data.task_type}")
 
@@ -172,15 +176,32 @@ class SwarmTrainer:
         
         if inner_step % 10 == 0:
             logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
-            logger.info(f"Batch size: {inputs.shape}")
         
-        outputs = self.model(inputs)
 
-        loss = self.task_type_loss(inputs, outputs, labels)
-        loss = loss / self.gradient_accumulation_steps
         
-        loss.backward()
-        
+        if self.config.data.task_type == "image_gen":
+            num_D_steps = self.config.biggan["num_D_steps"]
+
+            outputs = self.model(inputs, labels)
+            D_loss, G_loss = outputs[0], outputs[-1]
+            D_loss = D_loss / self.gradient_accumulation_steps
+            G_loss = G_loss / self.gradient_accumulation_steps
+            
+            # Log individual losses for GAN training diagnostics
+            if inner_step % 10 == 0:
+                logger.info(f"Step {step}: D_loss={D_loss.item():.4f}, G_loss={G_loss.item():.4f}, D/G ratio={D_loss.item()/G_loss.item():.4f}, Sum={D_loss.item() + G_loss.item():.4f}")
+            
+            D_loss.backward(retain_graph=inner_step % num_D_steps == 0)
+            if inner_step % num_D_steps == 0:
+                G_loss.backward()
+            # Logging the sum for monitoring although it's not a meaningful metric
+            loss = D_loss + G_loss
+        else:
+            outputs = self.model(inputs)
+            loss = self.task_type_loss(inputs, outputs, labels)
+            loss = loss / self.gradient_accumulation_steps
+            loss.backward()
+
         # Only step optimizer if we have accumulated enough gradients
         if self.use_baseline_model:
             # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
@@ -189,6 +210,10 @@ class SwarmTrainer:
         else:
             # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
             self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
+
+        if self.config.data.task_type == "image_gen":
+            if inner_step % self.config.biggan["eval_every"] == 0:
+                self.model.evaluate(step)
 
     def train(self):
         logger.info(f"============= Training for {self.num_total_steps} steps =============")

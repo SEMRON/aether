@@ -32,7 +32,7 @@ diloco:
     sgd_momentum: 0.9
     sgd_nesterov: True
   inner_steps: 500
-  outer_steps: 100
+  outer_steps: 10
   batch_size_per_step: 4
   gradient_accumulation_steps: 32
   min_refresh_period: 5.0
@@ -59,7 +59,6 @@ model_pipeline:
 param_mirror:
   enable: false
   refresh_every: 30
-  checkpoint_dir: "checkpoints/gptneo"
 
 world_size: 1
 device: "cuda"
