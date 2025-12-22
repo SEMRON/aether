@@ -24,12 +24,14 @@ class DistributedGui:
         self.worker_start_btns = {}  # server_name -> ui.button
         self.worker_status_indicators = {}  # server_name -> ui.icon
         self.detected_errors = []  # List of error dicts
+        self.seen_error_keys = set()  # Set of (source, message) tuples to track duplicates
 
         self.setup_ui()
         self.refresh_server_list()  # Initial refresh to populate from loaded state
 
     def on_error_reset(self, source: str):
-        # Remove all errors from this source
+        # Remove all errors from this source, but keep them in seen_error_keys
+        # so they won't be reported again if the same error is detected
         original_count = len(self.detected_errors)
         self.detected_errors = [e for e in self.detected_errors if e['source'] != source]
         if len(self.detected_errors) != original_count:
@@ -38,15 +40,20 @@ class DistributedGui:
     def on_error(self, event):
         # event is dict: {source, message, context, timestamp}
 
-        # Check if we already have an error for this source
-        # Only keep one error per source to avoid flooding
-        if any(e['source'] == event['source'] for e in self.detected_errors):
+        # Create a unique key for this error based on source and message
+        # Normalize message by stripping whitespace to handle minor variations
+        error_key = (event['source'], event['message'].strip())
+        
+        if error_key in self.seen_error_keys:
             return
+
+        # Mark this error as seen
+        self.seen_error_keys.add(error_key)
 
         self.detected_errors.insert(0, event) # Add to top
         # Keep list size manageable
         if len(self.detected_errors) > 100:
-            self.detected_errors.pop()
+            removed = self.detected_errors.pop()
 
         # Update UI if it exists
         if hasattr(self, 'error_list'):
@@ -471,6 +478,7 @@ class DistributedGui:
 
                         # Scan for configs
                         config_files = glob.glob("configs/*.yaml")
+                        config_files = [f for f in config_files if not f.endswith("template_config.yaml")]
                         config_select = ui.select(config_files, label='Config File', value=self.controller.state.last_job_config.config_path).classes('w-full')
 
                         wandb_key = ui.input('WandB API Key', password=True).classes('w-full')
@@ -486,16 +494,6 @@ class DistributedGui:
                         ui.label('Head Node (Client/Monitor)').classes('text-h6')
                         with ui.row().classes('w-full gap-2'):
                             self.server_select = ui.select([], label='Select Head Node').classes('flex-1')
-
-                        ui.separator().classes('my-2')
-                        ui.label('Worker Nodes').classes('text-h6')
-                        self.workers_container = ui.column().classes('w-full gap-2')
-
-
-                    with ui.column().classes('w-2/3'):
-                        ui.label('Controls').classes('text-h6')
-
-                        with ui.row():
                             async def start_head():
                                 cfg = JobConfig(
                                     config_path=config_select.value,
@@ -506,7 +504,25 @@ class DistributedGui:
                                 self.update_log_views()
                                 self.peers_display.content = "Waiting for peers..."
 
-                            ui.button('1. Start Head Node', on_click=start_head, color='primary')
+                            ui.button('Start Head Node', on_click=start_head, color='primary')
+                            async def stop_head():
+                                await self.controller.stop_task(self.server_select.value)
+                                self.update_log_views()
+                                self.peers_display.content = "Head node stopped"
+                                ui.notify(f"Head node stopped on {self.server_select.value}")
+
+                            ui.button('Stop Head Node', on_click=stop_head, color='warning')
+
+                        ui.separator().classes('my-2')
+                        ui.label('Worker Nodes').classes('text-h6')
+                        self.workers_container = ui.column().classes('w-full gap-2')
+
+
+                    with ui.column().classes('w-2/3'):
+                        ui.label('Controls').classes('text-h6')
+
+                        with ui.row():
+                            
 
                             async def start_all_workers():
                                 for s in self.controller.state.servers:
@@ -517,7 +533,7 @@ class DistributedGui:
                                         ui.notify(f"Failed to start {s.display_name}: {e}", type='negative')
                                 self.update_log_views()
 
-                            self.start_all_btn = ui.button('2. Start All Workers', on_click=start_all_workers, color='primary')
+                            self.start_all_btn = ui.button('Start All Workers', on_click=start_all_workers, color='primary')
                             self.start_all_btn.disable()
 
                             async def stop_all():
@@ -564,7 +580,11 @@ class DistributedGui:
                 with ui.card().classes('w-full mb-4 border-l-4 border-red-500'):
                     with ui.row().classes('w-full justify-between items-center'):
                         ui.label('Error Watcher').classes('text-h6 text-red-500')
-                        ui.button('Clear', on_click=lambda: (self.detected_errors.clear(), self.refresh_error_list())).classes('small')
+                        def clear_errors():
+                            self.detected_errors.clear()
+                            self.seen_error_keys.clear()
+                            self.refresh_error_list()
+                        ui.button('Clear', on_click=clear_errors).classes('small')
 
                     self.error_list = ui.column().classes('w-full gap-1 overflow-y-auto max-h-80')
                     self.refresh_error_list()

@@ -79,7 +79,7 @@ add_index_to_pyproject pytorch_cuda https://download.pytorch.org/whl/cu128
 add_package_explicit_index pytorch_cuda torch torchvision torchaudio
 {% elif gpu_vendor == "amd" %}
 echo "Using ROCm torch"
-add_index_to_pyproject pytorch_rocm https://download.pytorch.org/whl/rocm6.0
+add_index_to_pyproject pytorch_rocm https://download.pytorch.org/whl/rocm6.4
 add_package_explicit_index pytorch_rocm torch torchvision torchaudio pytorch-triton-rocm
 {% else %}
 echo "Using CPU torch"

@@ -104,6 +104,7 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         expert_uids=[expert_uid],
         hidden_dim=hidden_dim,
         optim_cls=optim_cls,
+        clip_grad_norm=cfg.diloco.max_grad_norm,
         optim_kwargs=optim_kwargs,
         min_batch_size=1,
         max_batch_size=cfg.diloco.batch_size_per_step,
@@ -113,6 +114,7 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         cfg=cfg,
         stage_index=stage_index,
         checkpoint_dir=cfg.checkpoint_dir if cfg.checkpoint_dir else None,
+        checkpoint_keep_history=cfg.checkpoint_keep_history,
     )
 
     # Store batch_size_per_step in DHT for this expert

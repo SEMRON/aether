@@ -45,6 +45,20 @@ class Controller:
         
         self.file_last_scanned: Dict[str, tuple] = {} # filename -> (updated_at_timestamp, size_str)
 
+    def _has_wandb_key(self, key: Optional[str]) -> bool:
+        return bool(key and key.strip())
+
+    def _emit_error_event(self, source: str, message: str, context: str = "") -> None:
+        """Send a structured error event to the UI (for toast + error panel)."""
+        event = {
+            "source": source,
+            "message": message,
+            "context": context or message,
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+        }
+        if self.error_callback:
+            self.error_callback(event)
+
     def _update_log_buffer(self, source: str, line: str):
         if source not in self.log_buffers:
             self.log_buffers[source] = deque(maxlen=20) # Keep last 20 lines for context
@@ -301,6 +315,16 @@ class Controller:
 
     async def start_head_node(self, server_name: str, config: JobConfig):
         """Start the head node (client/monitor)."""
+        if not self.no_wandb and not self._has_wandb_key(getattr(config, "wandb_api_key", None)):
+            self._emit_error_event(
+                source="W&B",
+                message="W&B API key is required to start a head node. Please set it in the GUI (Job Config) and try again.",
+                context="Start aborted: missing config.wandb_api_key.",
+            )
+            if self.status_callback:
+                self.status_callback("Start aborted: missing W&B API key.")
+            return
+
         server = self.get_server(server_name)
         if not server:
             raise ValueError(f"Server {server_name} not found")
@@ -397,6 +421,16 @@ class Controller:
         """Start worker nodes (servers)."""
         if not self.initial_peers:
             raise RuntimeError("Initial peers not yet received. Start head node first.")
+
+        if not self.no_wandb and not self._has_wandb_key(getattr(self.state.last_job_config, "wandb_api_key", None)):
+            self._emit_error_event(
+                source="W&B",
+                message="W&B API key is required to start worker nodes. Please set it in the GUI (Job Config) and try again.",
+                context="Start aborted: missing state.last_job_config.wandb_api_key.",
+            )
+            if self.status_callback:
+                self.status_callback("Start aborted: missing W&B API key.")
+            return
             
         print(f"Starting worker nodes: {server_names} with {device} batch_size={batch_size} inner_steps={inner_steps} grpc_announce_port={grpc_announce_port} host_port={host_port}")
         for name in server_names:

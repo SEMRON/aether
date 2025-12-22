@@ -26,18 +26,34 @@ class DataClient:
 
     def next_batch(self):
         desc = self.work_q.get()  # blocks
-        xmeta, ymeta = desc["inputs"], desc["labels"]
-        x = _from_shm(xmeta["name"], xmeta["shape"], xmeta["dtype"])
+        inputs_meta, ymeta = desc["inputs"], desc["labels"]
+        
+        if isinstance(inputs_meta, list):
+            # Tuple data: inputs_meta is a list of tensor descriptors (inputs_0, inputs_1, ...)
+            tensors = []
+            shm_handles = []
+            for meta in inputs_meta:
+                t = _from_shm(meta["name"], meta["shape"], meta["dtype"])
+                tensors.append(t)
+                shm_handles.append(t._shm)
+            inputs = tuple(tensors)
+        else:
+            # Regular data: inputs_meta is a single tensor descriptor
+            x = _from_shm(inputs_meta["name"], inputs_meta["shape"], inputs_meta["dtype"])
+            inputs = x
+            shm_handles = [x._shm]
+        
         y = _from_shm(ymeta["name"], ymeta["shape"], ymeta["dtype"])
+        shm_handles.append(y._shm)
+        
         def release():
             # return slot id to server and close local handles
             self.free_q.put(desc["slot"])
             # prevent resource_tracker from trying to unlink shared segments we only attached to
             try:
-                resource_tracker.unregister(x._shm._name, 'shared_memory')
-                resource_tracker.unregister(y._shm._name, 'shared_memory')
-                x._shm.close()
-                y._shm.close()
+                for shm in shm_handles:
+                    resource_tracker.unregister(shm._name, 'shared_memory')
+                    shm.close()
             except Exception:
                 pass
-        return {"inputs": x, "labels": y}, release
+        return {"inputs": inputs, "labels": y}, release

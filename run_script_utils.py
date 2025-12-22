@@ -145,7 +145,7 @@ def ensure_no_leftover_distqat_processes():
     if not pgrep:
         return
 
-    result = subprocess.run([pgrep, "-af", "distqat"], capture_output=True, text=True, check=False)
+    result = subprocess.run([pgrep, "-af", "distqat/"], capture_output=True, text=True, check=False)
     if result.returncode not in (0, 1):
         # Unable to determine; assume safe to continue.
         return

@@ -3,6 +3,8 @@ import subprocess
 import os
 import tempfile
 import yaml
+import shutil
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -39,15 +41,26 @@ logger = get_logger(__name__)
 DISABLE_QUANT = True
 
 class Orchestrator(BaseOrchestrator):
-    def __init__(self, config_path: str, public_ip=None, num_servers=1):
+    def __init__(self, config_path: str, public_ip=None, num_servers=1, delete_checkpoints=False):
         super().__init__(
             config_path=config_path,
             public_ip=public_ip,
             disable_quant=DISABLE_QUANT,
         )
         self.num_servers = num_servers
+        self.delete_checkpoints = delete_checkpoints
     async def start(self):
         ensure_no_leftover_distqat_processes()
+
+        # Delete checkpoints if requested
+        if self.delete_checkpoints and self.config.checkpoint_dir is not None:
+            checkpoint_dir = Path(self.config.checkpoint_dir)
+            if checkpoint_dir.exists():
+                print(f"ORCHESTRATOR: Deleting checkpoint directory: {checkpoint_dir}")
+                shutil.rmtree(checkpoint_dir)
+                print(f"ORCHESTRATOR: Checkpoint directory deleted")
+            else:
+                print(f"ORCHESTRATOR: Checkpoint directory does not exist: {checkpoint_dir}")
 
         if not is_wandb_logged_in() and self.config.wandb_project:
             raise RuntimeError("Wandb is not logged in, please login to wandb using the wandb login command or set the wandb_project to None through the config file or command line argument")
@@ -111,14 +124,17 @@ class Orchestrator(BaseOrchestrator):
 @click.option("--public-ip", type=str, default=None)
 @click.option("--config-path", type=str, default="configs/resnet18.yaml")
 @click.option("--num-servers", type=int, default=1)
+@click.option("--delete-checkpoints", is_flag=True, default=False, help="Delete checkpoint directory before starting the run")
 @from_pydantic(Config)
-def main(public_ip: Optional[str], config_path: str, num_servers: int, config: Config, **_kwargs):
+def main(public_ip: Optional[str], config_path: str, num_servers: int, delete_checkpoints: bool, config: Config, **_kwargs):
     """Run the same local orchestrator flow as the old argparse entrypoint."""
     cfg = parse_yaml_file_as(Config, config_path)
     base_dict = cfg.model_dump(exclude_unset=True)
     override_dict = config.model_dump(exclude_unset=True)
     merged_dict = always_merger.merge(base_dict, override_dict)
     merged_cfg = cfg.model_validate(merged_dict)
+
+    merged_cfg.world_size = num_servers
 
     resolved_public_ip = public_ip or get_public_ip()
     print("Public IP:", resolved_public_ip)
@@ -131,7 +147,7 @@ def main(public_ip: Optional[str], config_path: str, num_servers: int, config: C
             yaml.dump(merged_cfg.model_dump(mode="json"), temp_config_file)
 
         async def run():
-            orch = Orchestrator(config_path=temp_config_path, public_ip=resolved_public_ip, num_servers=num_servers)
+            orch = Orchestrator(config_path=temp_config_path, public_ip=resolved_public_ip, num_servers=num_servers, delete_checkpoints=delete_checkpoints)
             try:
                 await orch.start()
                 await orch.wait()

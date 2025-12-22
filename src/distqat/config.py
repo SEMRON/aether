@@ -65,6 +65,7 @@ class OptimConfig(BaseModel):
     adam_weight_decay: float = 0.1
     adam_betas1: float = 0.9
     adam_betas2: float = 0.95
+    adam_epsilon: float = 1e-8
 
     # Parameters for BigGAN
     biggan_G_lr: float = 2e-4
@@ -76,12 +77,29 @@ class OptimConfig(BaseModel):
     biggan_adam_eps: float = 1.0e-06
     biggan_model_config: Dict[str, Any] = {}
 
+
+class PPOConfig(BaseModel):
+    num_steps: int = 2048
+    update_epochs: int = 10
+    num_minibatches: int = 32
+    minibatch_size: int = 64
+    total_timesteps: int = 1000000
+    gamma: float = 0.99
+    lam: float = 0.95
+    clip_coef: float = 0.2
+    ent_coef: float = 0.01
+    num_envs: int = 1
+    gae_lambda: float = 0.95
+    vf_coef: float = 0.5
+    target_kl: Optional[float] = None
+
 class DilocoConfig(BaseModel):
     inner_optim: OptimConfig = OptimConfig(type="adam")
     outer_optim: OptimConfig = OptimConfig(type="sgd")
     inner_steps: int = 50
     outer_steps: int = 10
     batch_size_per_step: int = 64
+    max_grad_norm: Optional[float] = None
     gradient_accumulation_steps: int = 1
     min_refresh_period: float = 0.5
     max_refresh_period: float = 30
@@ -165,6 +183,11 @@ class ModelConfig(BaseModel):
     hid_dim: int = 2048
     n_layers: int = 8
     idx: int = 8
+    in_dim: int = 128
+    action_dim: Optional[int] = None
+    num_nodes: Optional[int] = None
+    num_edges: Optional[int] = None
+    outputs_schema_instance_dims: Optional[List[int]] = None
     # Arbitrary model-specific parameters forwarded to expert constructor and sample_input
     extra: dict = Field(default_factory=dict)
 
@@ -194,7 +217,7 @@ class NetworkConfig(BaseModel):
     server_base_grpc_announceport: int = 51500  # Base port for server gRPC announce (expert endpoint), necessary when port mapping is used, actual port = base + idx (0 to num_servers)
 
 class ParamMirrorConfig(BaseModel):
-    enable: bool = True
+    enable: bool = False
     refresh_every: int = 300
 
 
@@ -220,7 +243,14 @@ class Config(BaseModel):
     param_mirror: ParamMirrorConfig = ParamMirrorConfig()
     data_server: DataServerConfig = DataServerConfig()
     checkpoint_dir: Optional[Path] = None
+    checkpoint_keep_history: bool = True
     log_dir: Path = Path("logs") / experiment_prefix
+    
+    # World size is used to scale the batch size of the baseline model
+    world_size: int = 1
+    
+    # PPO-specific configs
+    ppo: PPOConfig = PPOConfig()
 
     # Optional holder for model-specific configs (e.g., BigGAN CLI-style params)
     biggan: Optional[Dict[str, Any]] = None

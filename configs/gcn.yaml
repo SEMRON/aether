@@ -1,22 +1,17 @@
 wandb_project: "distqat"
-experiment_prefix: "resnet18"
+experiment_prefix: "gcn"
 
 data:
-  # dataset_name: "ylecun/mnist"
-  dataset_name: "uoft-cs/cifar10"
-  # dataset_name: "ILSVRC/imagenet-1k"
-  dataset_split: "train"
-  task_type: "cv"
+  dataset_name: "ogbn-arxiv"
+  task_type: "node_pred"
   num_workers: 0
-  precision: "fp16-mixed"
-  num_channels: 3 # change to 1 for mnist
-  img_size: 32 # change to 224 for imagenet
+  precision: "32-true"
 
 diloco:
   inner_optim:
     type: "adam"
-    adam_lr: 4e-4
-    adam_weight_decay: 0.1
+    adam_lr: 0.01
+    adam_weight_decay: 5e-4
     adam_betas1: 0.9
     adam_betas2: 0.95
   outer_optim:
@@ -26,7 +21,7 @@ diloco:
     sgd_nesterov: True
   inner_steps: 500
   outer_steps: 100
-  batch_size_per_step: 64
+  batch_size_per_step: 1
   min_refresh_period: 5.0
   max_refresh_period: 30.0
   averaging_timeout: 60.0
@@ -34,8 +29,13 @@ diloco:
 
 model_pipeline:
   pipeline:
-    - model_name: "resnet18.full"
-      num_classes: 10
+    - model_name: "gcn.full"
+      in_dim: 128
+      hid_dim: 128
+      num_classes: 40
+      num_nodes: 169343
+      num_edges: 1166243
+      outputs_schema_instance_dims: [169343, 40]
   forward_timeout: 90.0
   backward_timeout: 180.0
 
@@ -51,8 +51,7 @@ data_server:
   num_workers: 1
   pool_size: 32
 
+world_size: 2
 device: "cuda"
 max_expert_index: 128
-log_dir: "logs/resnet18"
-checkpoint_dir: "checkpoints/resnet18"
-checkpoint_keep_history: false
+log_dir: "logs/gcn"

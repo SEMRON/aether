@@ -13,6 +13,7 @@ from distqat.models import get_model
 from distqat.optimizers import get_diloco_optimizer_cls_kwargs
 from distqat.attach import attach_quantizers
 from distqat.utils.metrics import MetricsLogger, LocalMetrics
+from distqat.utils.baseline_checkpoints import BaselineCheckpointSaver, load_checkpoint
 
 use_hivemind_log_handler("in_root_logger")
 logger = get_logger(__name__)
@@ -42,10 +43,10 @@ class RemoteModel(torch.nn.Module):
             )
             self.model_pipeline.append(pipeline_step)
 
-    def forward(self, x, labels=None):
+    def forward(self, x):
         for pipeline_step in self.model_pipeline:
-            if labels is not None:
-                x = pipeline_step(x, labels)
+            if isinstance(x, tuple):
+                x = pipeline_step(*x)
             else:
                 x = pipeline_step(x)
         return x
@@ -69,10 +70,10 @@ class BaselineModel(torch.nn.Module):
             pipeline_step = get_model(config, pipeline_step_cfg)
             self.model_pipeline.append(pipeline_step)
 
-    def forward(self, x, labels=None):
+    def forward(self, x):
         for pipeline_step in self.model_pipeline:
-            if labels is not None:
-                x = pipeline_step(x, labels)
+            if isinstance(x, tuple):
+                x = pipeline_step(*x)
             else:
                 x = pipeline_step(x)
         return x
@@ -150,9 +151,7 @@ class SwarmModel(torch.nn.Module):
     def parameters(self):
         yield from self.model.parameters()
 
-    def forward(self, x, labels=None):
-        if labels is not None:
-            return self.model(x, labels)
+    def forward(self, x):
         return self.model(x)
     
     def evaluate(self, step):
@@ -172,7 +171,7 @@ class SwarmBaselineModel(torch.nn.Module):
 
 
         config = config.model_copy()
-
+        self.config = config
         self.dht = DHT(
             start=True,
             initial_peers=config.network.initial_peers,
@@ -197,9 +196,15 @@ class SwarmBaselineModel(torch.nn.Module):
         model.to(config.device)
 
         self.model = model
+        
+        run_id = f"{config.experiment_prefix}_baseline"
 
+        # DataServer model uses trainer_id = -2 and needs to use run_id = "0" to average with other swarm models
+        # Currently only used by PPO and would only work with full stage models
+        if trainer_id == -2:
+            run_id = f"{config.experiment_prefix}_0"
         optimizer_cls, optimizer_kwargs = get_diloco_optimizer_cls_kwargs(
-            run_id=f"{config.experiment_prefix}_baseline", 
+            run_id=run_id, 
             config=config.diloco,
         )
         self.optimizer = optimizer_cls(
@@ -210,6 +215,22 @@ class SwarmBaselineModel(torch.nn.Module):
             **optimizer_kwargs,
         )
 
+        self.checkpoint_dir = config.checkpoint_dir
+        self.checkpoint_keep_history = config.checkpoint_keep_history
+
+        if self.checkpoint_dir is not None:
+            load_checkpoint(self.model, self.checkpoint_dir / "baseline")
+
+            self.checkpoint_saver = BaselineCheckpointSaver(
+                model=self.model,
+                checkpoint_dir=self.checkpoint_dir / "baseline",
+                update_period=10,
+                keep_history=self.checkpoint_keep_history
+            )
+            self.checkpoint_saver.start()
+        else:
+            self.checkpoint_saver = None
+
         self.metrics_logger = MetricsLogger(
             self.dht,
             self.model,
@@ -217,11 +238,17 @@ class SwarmBaselineModel(torch.nn.Module):
             config.experiment_prefix,
             statistics_expiration,
             trainer_id,
+            # Data server (trainer_id == -2) emits PPO episodic metrics based on env steps.
+            # Keep these separate from trainer loss metrics so the monitor can aggregate both cleanly.
+            key_suffix="_rl_metrics" if trainer_id == -2 else "_metrics",
         )
 
     def shutdown(self):
         try:
             if isinstance(self.optimizer, CollaborativeOptimizer):
+                if self.checkpoint_saver is not None:
+                    self.checkpoint_saver.stop.set()
+                    self.checkpoint_saver.join()
                 self.optimizer.shutdown()
         except Exception as e:
             logger.warning(f"Error shutting down optimizer: {e}")
@@ -231,14 +258,17 @@ class SwarmBaselineModel(torch.nn.Module):
         except Exception as e:
             logger.warning(f"Error shutting down DHT: {e}")
 
-    def forward(self, x, labels= None):
-        if labels is None:
-            x_device = x.device
-            x = x.to(self.device)
-            y = self.model(x, labels)
-            y = y.to(x_device)
+    def forward(self, x):
+        if isinstance(x, tuple):
+            x = tuple(item.to(self.device) if hasattr(item, "to") else item for item in x)
+            y = self.model(x)
         else:
-            y = self.model(x, labels)
+            x = x.to(self.device)
+            y = self.model(x)
+        if isinstance(y, tuple):
+            y = tuple(item.cpu() for item in y)
+        else:
+            y = y.cpu()
         return y
 
     def evaluate(self, step):

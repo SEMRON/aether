@@ -107,7 +107,10 @@ class ParamMirror(threading.Thread):
             if len(self._expert_backends) > 0:
                 try:
                     self._checkpoint_saver = CheckpointSaver(
-                        self._expert_backends, checkpoint_dir, self.refresh_every
+                        self._expert_backends,
+                        checkpoint_dir,
+                        self.refresh_every,
+                        keep_history=cfg.checkpoint_keep_history,
                     )
                     self._checkpoint_saver.start()
                 except Exception as e:

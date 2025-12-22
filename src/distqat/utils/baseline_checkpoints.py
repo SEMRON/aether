@@ -13,6 +13,7 @@ from hivemind.utils.logging import get_logger
 from distqat.distributed.server.expert_backend import ExpertBackend
 
 logger = get_logger(__name__)
+logger.setLevel("DEBUG")
 
 
 def is_directory(directory: Path):
@@ -50,7 +51,7 @@ def copy_tree(src: str, dst: str):
             copy2(src_entry, dst_entry)
 
 
-class CheckpointSaver(threading.Thread):
+class BaselineCheckpointSaver(threading.Thread):
     """
     A background thread that periodically saves expert checkpoints to disk.
     
@@ -65,22 +66,22 @@ class CheckpointSaver(threading.Thread):
     """
     def __init__(
         self,
-        expert_backends: Dict[str, ExpertBackend],
+        model: torch.nn.Module,
         checkpoint_dir: Path,
         update_period: int,
         *,
         keep_history: bool = True,
     ):
         super().__init__()
-        assert is_directory(checkpoint_dir)
-        self.expert_backends = expert_backends
+        # assert is_directory(checkpoint_dir)
+        self.model = model
         self.update_period = update_period
         self.checkpoint_dir = checkpoint_dir
         self.keep_history = keep_history
         self.stop = threading.Event()
 
         # create expert directories to ensure that the directory is writable and checkpoints can be loaded
-        store_experts(self.expert_backends, self.checkpoint_dir, keep_history=self.keep_history)
+        store_checkpoint(self.model, self.checkpoint_dir, keep_history=self.keep_history)
 
     def run(self) -> None:
         """
@@ -90,7 +91,7 @@ class CheckpointSaver(threading.Thread):
         intervals until the thread is signaled to stop.
         """
         while not self.stop.wait(self.update_period):
-            store_experts(self.expert_backends, self.checkpoint_dir, keep_history=self.keep_history)
+            store_checkpoint(self.model, self.checkpoint_dir, keep_history=self.keep_history)
 
 
 def _safe_unlink(path: Path) -> None:
@@ -100,7 +101,7 @@ def _safe_unlink(path: Path) -> None:
         return
 
 
-def store_experts(experts: Dict[str, ExpertBackend], checkpoint_dir: Path, *, keep_history: bool = True):
+def store_checkpoint(model: torch.nn.Module, checkpoint_dir: Path, *, keep_history: bool = True):
     """
     Save checkpoints for all experts to the specified directory.
     
@@ -118,39 +119,30 @@ def store_experts(experts: Dict[str, ExpertBackend], checkpoint_dir: Path, *, ke
     assert is_directory(checkpoint_dir)
     timestamp = datetime.now().isoformat(sep="_")
 
-    for expert_name, expert_backend in experts.items():
-        expert_dir = checkpoint_dir / expert_name
-        expert_dir.mkdir(parents=True, exist_ok=True)
+    if keep_history:
+        checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.pt"
+        tmp_checkpoint_path = checkpoint_dir / f".checkpoint_{timestamp}.pt.tmp"
+        torch.save(model.state_dict(), tmp_checkpoint_path)
+        os.replace(tmp_checkpoint_path, checkpoint_path)
+        last_path = checkpoint_dir / "checkpoint_last.pt"
+        tmp_last_path = checkpoint_dir / ".checkpoint_last.pt.tmp"
+        _safe_unlink(tmp_last_path)
+        os.symlink(checkpoint_path.name, tmp_last_path)
+        os.replace(tmp_last_path, last_path)
+    else:
+        checkpoint_path = checkpoint_dir / "checkpoint_last.pt"
+        tmp_checkpoint_path = checkpoint_dir / ".checkpoint_last.pt.tmp"
+        torch.save(model.state_dict(), tmp_checkpoint_path)
+        os.replace(tmp_checkpoint_path, checkpoint_path)
 
-        if keep_history:
-            checkpoint_path = expert_dir / f"checkpoint_{timestamp}.pt"
-            tmp_checkpoint_path = expert_dir / f".checkpoint_{timestamp}.pt.tmp"
-            torch.save(expert_backend.get_full_state(), tmp_checkpoint_path)
-            os.replace(tmp_checkpoint_path, checkpoint_path)
+        # Remove any historical timestamped checkpoints to enforce "only last".
+        for old_ckpt in checkpoint_dir.glob("checkpoint_*.pt"):
+            # NOTE: "checkpoint_last.pt" matches "checkpoint_*.pt", so we must not delete it.
+            if old_ckpt.name == "checkpoint_last.pt":
+                continue
+            _safe_unlink(old_ckpt)
 
-            # Update checkpoint_last.pt as a relative symlink for portability.
-            # Use a temp symlink + replace for atomic update.
-            last_path = expert_dir / "checkpoint_last.pt"
-            tmp_last_path = expert_dir / ".checkpoint_last.pt.tmp"
-            _safe_unlink(tmp_last_path)
-            os.symlink(checkpoint_path.name, tmp_last_path)
-            os.replace(tmp_last_path, last_path)
-        else:
-            # Only keep checkpoint_last.pt, overwriting it each time.
-            last_path = expert_dir / "checkpoint_last.pt"
-            tmp_last_path = expert_dir / ".checkpoint_last.pt.tmp"
-            torch.save(expert_backend.get_full_state(), tmp_last_path)
-            os.replace(tmp_last_path, last_path)
-
-            # Remove any historical timestamped checkpoints to enforce "only last".
-            for old_ckpt in expert_dir.glob("checkpoint_*.pt"):
-                # NOTE: "checkpoint_last.pt" matches "checkpoint_*.pt", so we must not delete it.
-                if old_ckpt.name == "checkpoint_last.pt":
-                    continue
-                _safe_unlink(old_ckpt)
-
-
-def load_experts(experts: Dict[str, ExpertBackend], checkpoint_dir: Path):
+def load_checkpoint(model: torch.nn.Module, checkpoint_dir: Path):
     """
     Load the latest checkpoints for all experts from the specified directory.
     
@@ -162,10 +154,9 @@ def load_experts(experts: Dict[str, ExpertBackend], checkpoint_dir: Path):
     """
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     assert is_directory(checkpoint_dir)
-    for expert_name, expert in experts.items():
-        checkpoints_folder = checkpoint_dir / expert_name
-        latest_checkpoint = checkpoints_folder / "checkpoint_last.pt"
-        if latest_checkpoint.exists():
-            expert.load_full_state(torch.load(latest_checkpoint))
-        else:
-            logger.warning(f"Failed to load checkpoint for expert {expert_name}")
+    latest_checkpoint = checkpoint_dir / "checkpoint_last.pt"
+    if latest_checkpoint.exists():
+        logger.debug(f"Loading checkpoint from {latest_checkpoint}")
+        model.load_state_dict(torch.load(latest_checkpoint))
+    else:
+        logger.warning(f"Failed to load checkpoint")

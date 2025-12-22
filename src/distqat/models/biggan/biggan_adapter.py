@@ -152,8 +152,8 @@ class BigGANAdapter(torch.nn.Module):
                 logger.warning(f"Failed to initialize inception network for evaluation: {e}")
                 self.enable_eval = False
 
-    def forward(self, x, label= None):
-        y = label.to(torch.long)
+    def forward(self, x, labels):
+        y = labels.to(torch.long)
         flag = x.shape[0] != self.batch_size
         # if isinstance(batch, tuple) or isinstance(batch, list):
         #     x, y = batch  # real images and labels

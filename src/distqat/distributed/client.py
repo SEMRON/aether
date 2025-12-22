@@ -105,6 +105,7 @@ class SwarmClient:
             [
                 sys.executable, "src/distqat/distributed/data_server.py",
                 "--config-path", self.config.path,
+                "--network-initial-peers", json.dumps(self.config.network.initial_peers),
             ],
             stdout=open(self.log_dir / "data_server.log", "w"),
             stderr=subprocess.STDOUT,

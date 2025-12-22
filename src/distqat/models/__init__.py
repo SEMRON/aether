@@ -20,6 +20,9 @@ from .distilgpt2 import (
 from .gpt_neo import GPTNeoFull, GPTNeoHeadExpert, GPTNeoBodyExpert, GPTNeoTailExpert
 from .wav2vec2 import Wav2Vec2Full, Wav2Vec2Head, Wav2Vec2Body, Wav2Vec2Tail
 from .biggan.biggan_adapter import BigGANAdapter
+from .gcn import GCN
+from .ppo import PPOAgent
+
 
 MODEL_TYPES: Dict[str, Type[Any]] = {
     "mlp": MLP,
@@ -43,6 +46,8 @@ MODEL_TYPES: Dict[str, Type[Any]] = {
     "wav2vec2.body": Wav2Vec2Body,
     "wav2vec2.tail": Wav2Vec2Tail,
     "biggan.full": BigGANAdapter,
+    "gcn.full": GCN,
+    "ppo.full": PPOAgent,
 }
 
 

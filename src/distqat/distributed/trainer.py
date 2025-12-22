@@ -6,6 +6,9 @@ import signal
 import warnings
 import time
 from transformers import AutoConfig
+import torch.nn as nn
+
+import numpy as np
 
 import click
 from hivemind.utils.logging import get_logger
@@ -72,6 +75,9 @@ class SwarmTrainer:
         self.shm_client = DataClient(host=self.config.data_server.ipc_host, port=int(self.config.data_server.ipc_port), authkey=self.config.data_server.ipc_key.encode())
 
         self.batch_size = self.config.diloco.batch_size_per_step
+        if self.use_baseline_model and self.config.world_size > 0:
+            self.batch_size *= self.config.world_size
+            
         self.gradient_accumulation_steps = self.config.diloco.gradient_accumulation_steps
         
         effective_batch = self.batch_size * self.gradient_accumulation_steps
@@ -87,7 +93,7 @@ class SwarmTrainer:
         yield from self.model.parameters()
 
 
-    def task_type_loss(self, inputs, outputs, labels):
+    def task_type_loss(self, inputs, outputs, labels, step=None):
         if self.config.data.task_type == "cv":
             return F.cross_entropy(outputs, labels)
         elif self.config.data.task_type == "llm":
@@ -131,58 +137,112 @@ class SwarmTrainer:
             D_loss, G_loss = outputs['D_loss'], outputs['G_loss']
             D_loss.backward()
             G_loss.backward()
+        elif self.config.data.task_type == "node_pred":
+            outputs = outputs.squeeze(0)
+            labels = labels.squeeze(0)
+            return F.cross_entropy(outputs, labels)
+        elif self.config.data.task_type == "rl":
+            b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values = inputs
+            _, newlogprob, entropy, newvalue = outputs
+            logratio = newlogprob - b_logprobs
+            ratio = logratio.exp()
+
+            with torch.no_grad():
+                old_approx_kl = (-logratio).mean()
+                approx_kl = ((ratio - 1) - logratio).mean()
+                clip_coef = float(self.config.ppo.clip_coef)
+                clipfrac = ((ratio - 1.0).abs() > clip_coef).float().mean().item()
+
+            mb_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+
+            # Policy loss
+            pg_loss1 = -mb_advantages * ratio
+            pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+            # Value loss
+            newvalue = newvalue.view(-1)
+            v_loss_unclipped = (newvalue - b_returns) ** 2
+            v_clipped = b_values + torch.clamp(newvalue - b_values, -clip_coef, clip_coef)
+            v_loss_clipped = (v_clipped - b_returns) ** 2
+            v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+            v_loss = 0.5 * v_loss_max.mean()
+
+            entropy_loss = entropy.mean()
+            loss = pg_loss - float(self.config.ppo.ent_coef) * entropy_loss + v_loss * float(self.config.ppo.vf_coef)
+
+            # logging
+            y_pred, y_true = b_values.detach().cpu().numpy(), b_returns.detach().cpu().numpy()
+            var_y = np.var(y_true)
+            explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+            log_scalar = self.model.metrics_logger.log_scalar
+            log_scalar("losses/value_loss", v_loss.item(), step)
+            log_scalar("losses/policy_loss", pg_loss.item(), step)
+            log_scalar("losses/entropy", entropy_loss.item(), step)
+            log_scalar("losses/old_approx_kl", old_approx_kl.item(), step)
+            log_scalar("losses/approx_kl", approx_kl.item(), step)
+            log_scalar("losses/clipfrac", clipfrac, step)
+            log_scalar("losses/explained_variance", float(explained_var), step)
+            log_scalar("charts/global_step", step, step)
+
+            return loss
         else:
             raise ValueError(f"Unknown task type: {self.config.data.task_type}")
 
 
     def step(self, inner_step: int, step: int):
-        inputs_list = []
-        labels_list = []
         releases_to_call = []
-        
-        samples_needed = self.batch_size
-        
-        while samples_needed > 0:
-            if self.remaining_batch is None:
-                self.remaining_batch, self.remaining_release = self.shm_client.next_batch()
+
+        # For graph data, each batch is already complete and can't be sliced (because it's a tuple)
+        # Skip the batching loop and use the batch directly
+        if self.config.data.task_type == "node_pred" or self.config.data.task_type == "rl":
+            batch, release = self.shm_client.next_batch()
+            inputs = batch["inputs"]
+            labels = batch["labels"]
+            if inner_step % 10 == 0:
+                logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
+            releases_to_call.append(release)
+        else:
+            inputs_list = []
+            labels_list = []
             
-            current_inputs = self.remaining_batch["inputs"]
-            current_labels = self.remaining_batch["labels"]
-            available = current_inputs.shape[0]
+            samples_needed = self.batch_size
             
-            take = min(samples_needed, available)
+            while samples_needed > 0:
+                if self.remaining_batch is None:
+                    self.remaining_batch, self.remaining_release = self.shm_client.next_batch()
+                
+                current_inputs = self.remaining_batch["inputs"]
+                current_labels = self.remaining_batch["labels"]
+                available = current_inputs.shape[0]
+                
+                take = min(samples_needed, available)
+                
+                inputs_list.append(current_inputs[:take])
+                labels_list.append(current_labels[:take])
+                
+                samples_needed -= take
+                
+                if take == available:
+                    releases_to_call.append(self.remaining_release)
+                    self.remaining_batch = None
+                    self.remaining_release = None
+                else:
+                    self.remaining_batch["inputs"] = current_inputs[take:]
+                    self.remaining_batch["labels"] = current_labels[take:]
             
-            inputs_list.append(current_inputs[:take])
-            labels_list.append(current_labels[:take])
+            inputs = torch.cat(inputs_list)
+            labels = torch.cat(labels_list)
             
-            samples_needed -= take
+            if inner_step % 10 == 0:
+                logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
             
-            if take == available:
-                releases_to_call.append(self.remaining_release)
-                self.remaining_batch = None
-                self.remaining_release = None
-            else:
-                self.remaining_batch["inputs"] = current_inputs[take:]
-                self.remaining_batch["labels"] = current_labels[take:]
-        
-        inputs = torch.cat(inputs_list)
-        labels = torch.cat(labels_list)
-        
-        for release in releases_to_call:
-            try:
-                release()
-            except Exception:
-                pass
-        
-        if inner_step % 10 == 0:
-            logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
-        
 
         
         if self.config.data.task_type == "image_gen":
             num_D_steps = self.config.biggan["num_D_steps"]
 
-            outputs = self.model(inputs, labels)
+            outputs = self.model((inputs, labels))
             D_loss, G_loss = outputs[0], outputs[-1]
             D_loss = D_loss / self.gradient_accumulation_steps
             G_loss = G_loss / self.gradient_accumulation_steps
@@ -197,15 +257,22 @@ class SwarmTrainer:
             # Logging the sum for monitoring although it's not a meaningful metric
             loss = D_loss + G_loss
         else:
-            outputs = self.model(inputs)
-            loss = self.task_type_loss(inputs, outputs, labels)
+            if self.config.data.task_type == "rl":
+                b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values = inputs
+                outputs = self.model((b_obs, b_actions))
+            else:
+                outputs = self.model(inputs)
+            loss = self.task_type_loss(inputs, outputs, labels, step)
             loss = loss / self.gradient_accumulation_steps
             loss.backward()
+        
 
         # Only step optimizer if we have accumulated enough gradients
         if self.use_baseline_model:
             # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
             if (inner_step + 1) % self.gradient_accumulation_steps == 0:
+                if self.config.diloco.max_grad_norm is not None:
+                    nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.diloco.max_grad_norm))
                 self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
         else:
             # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
@@ -214,6 +281,12 @@ class SwarmTrainer:
         if self.config.data.task_type == "image_gen":
             if inner_step % self.config.biggan["eval_every"] == 0:
                 self.model.evaluate(step)
+        
+        for release in releases_to_call:
+            try:
+                release()
+            except Exception:
+                pass
 
     def train(self):
         logger.info(f"============= Training for {self.num_total_steps} steps =============")
@@ -266,6 +339,8 @@ class SwarmTrainer:
 
         # TODO: Flatten the loops back to while not done and add the rebuild_pipeline step with a modulo step based on a config parameter
         while step < self.num_total_steps:
+            logger.info(f"Outer step {outer_step} starting")
+
             # heartbeat into active-set with TTL if you have a refresher
             register_process(dht, prefix, ttl=300.0)
             
@@ -285,7 +360,8 @@ class SwarmTrainer:
                 inner += 1
                 if step >= self.num_total_steps:
                     break
-
+            
+            logger.info(f"Outer step {outer_step} completed")
             set_outer_step_if_greater(dht, prefix, outer_step + 1)
 
             outer_step += 1

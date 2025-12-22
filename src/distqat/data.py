@@ -1,16 +1,33 @@
 #!/bin/env python3
 
+import builtins
+import contextlib
+import os
+
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from torchvision import datasets, transforms
+from ogb.nodeproppred import PygNodePropPredDataset
+import torch
 
 from datasets import load_dataset
 from datasets.distributed import split_dataset_by_node
 from transformers import AutoTokenizer, Wav2Vec2Processor
 
 from distqat.utils.biggan.utils import CenterCropLongEdge
-from distqat.config import DataConfig
+from distqat.config import DataConfig, ModelConfig
 from distqat.utils.hash import hash64
 import numpy as np
+
+
+@contextlib.contextmanager
+def _default_input(default: str = "y"):
+    """Temporarily override input() to always return `default`."""
+    orig_input = builtins.input
+    builtins.input = lambda *args, **kwargs: default
+    try:
+        yield
+    finally:
+        builtins.input = orig_input
 
 
 class CVDataset(IterableDataset):
@@ -23,7 +40,7 @@ class CVDataset(IterableDataset):
         for ex in self.dataset:
             image = ex[self.content_key]
             image = self.transform(image)
-            label = ex["label"]
+            label = np.asarray(ex["label"], dtype=np.int64)
             image_arr = np.asarray(image, dtype=np.float32)
             uid = hash64(image_arr.tobytes())
             yield uid, {
@@ -91,11 +108,46 @@ class SpeechDataset(IterableDataset):
                 "labels": self.processor(text=text).input_ids,
             }
 
+
+class GraphDataset(IterableDataset):
+    def __init__(self, data, repeat: bool = True, uid_seed: int = 0):
+        """
+        Yields the full graph in the format expected by the trainer/model pipeline.
+        
+        Args:
+            data: PyTorch Geometric Data object
+            repeat: If True, yields the same full-graph sample indefinitely (with different uids)
+            uid_seed: Mixed into the UID generation to support multiple independent streams
+        """
+        self.data = data
+        self.repeat = repeat
+        self.uid_seed = uid_seed
+
+    def __iter__(self):
+        data = self.data
+        x = data.x
+        edge_index = data.edge_index
+        y = data.y
+
+        x_arr = x.detach().cpu().numpy().astype(np.float32, copy=False)
+        edge_arr = edge_index.detach().cpu().numpy().astype(np.int64, copy=False)
+        graph_uid = hash64(np.concatenate([x_arr.reshape(-1), edge_arr.reshape(-1)]).tobytes())
+        i = 0
+        while True:
+            uid = hash64(f"{self.uid_seed}:{graph_uid}:{i}".encode())
+            yield uid, {"x": x, "edge_index": edge_index, "y": y}
+            i += 1
+            if not self.repeat:
+                break
+
 def cv_collate_fn(batch):
     import torch
     uids, batch = zip(*batch)
-    images = [torch.tensor(b["image"], dtype=torch.float32) for b in batch]
-    labels = [torch.tensor(b["label"], dtype=torch.long) for b in batch]
+    images = [
+        (b["image"].to(dtype=torch.float32) if torch.is_tensor(b["image"]) else torch.as_tensor(b["image"], dtype=torch.float32))
+        for b in batch
+    ]
+    labels = [torch.as_tensor(b["label"], dtype=torch.long) for b in batch]
     return uids, {
         "inputs": torch.stack(images, dim=0),
         "labels": torch.stack(labels, dim=0),
@@ -133,7 +185,39 @@ def speech_collate_fn(features, processor):
     batch["labels"] = labels
     return uids, batch
 
-def collate_fn(data_config: DataConfig):
+def graph_collate_fn(batch, hidden_dim: int):
+    """
+    Collate function for graph data.
+    Each item is a full-graph sample dict with keys {"x","edge_index","y"}.
+    Returns x and edge_index as a tuple, packed with a leading batch dimension of 1:
+      - x: (1, num_nodes, in_dim)
+      - edge_index: (1, 2, num_edges)
+    """
+    import torch
+    uids, batch_data = zip(*batch)
+    num_nodes = batch_data[0]["x"].shape[0]
+    dropout_mask = torch.randint(0, 2, (num_nodes, hidden_dim), dtype=torch.long)
+
+    if len(batch_data) == 1:
+        data = batch_data[0]
+        x = data["x"].unsqueeze(0)
+        edge_index = data["edge_index"].unsqueeze(0)
+        labels = data["y"]
+        labels = labels.t()
+        dropout_mask = dropout_mask.unsqueeze(0)
+    else:
+        # Full-batch graph training should use DataLoader(batch_size=1). Merging multiple full graphs
+        # is both expensive and almost certainly unintended.
+        raise ValueError(
+            f"graph_collate_fn received batch_size={len(batch_data)} full graphs. "
+            "Please set the DataLoader batch_size to 1 for task_type='node_pred'."
+        )
+    return uids, {
+        "inputs": (x, edge_index, dropout_mask),
+        "labels": labels,
+    }
+
+def collate_fn(data_config: DataConfig, model_config: ModelConfig):
     if data_config.task_type == "cv" or data_config.task_type == "image_gen":
         return cv_collate_fn
     elif data_config.task_type == "llm":
@@ -142,6 +226,8 @@ def collate_fn(data_config: DataConfig):
         # Create processor once and return a closure
         processor = Wav2Vec2Processor.from_pretrained(data_config.full_model_name)
         return lambda features: speech_collate_fn(features, processor)
+    elif data_config.task_type == "node_pred":
+        return lambda batch: graph_collate_fn(batch, model_config.hid_dim)
     else:
         return None
 
@@ -158,17 +244,20 @@ def get_train_val_datasets(data_config: DataConfig):
     if data_config.task_type == "cv":
         ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True, token=data_config.hf_token)
         content_key = "image"
+        val_split = "validation"
         # For CV tasks, use dataset-specific normalization stats
         if "mnist" in data_config.dataset_name:
             transform = transforms.Compose([
                 transforms.ToTensor(),
                 transforms.Normalize((0.1307,), (0.3081,)),  # MNIST mean and std
             ])
+            val_split = "test"
         elif "cifar10" in data_config.dataset_name:
             transform = transforms.Compose([
                 transforms.ToTensor(),
                 transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),  # CIFAR-10 mean and std
             ])
+            val_split = "test"
             # different key for cifar10
             content_key = "img"
         elif "imagenet-1k" in data_config.dataset_name:
@@ -180,7 +269,10 @@ def get_train_val_datasets(data_config: DataConfig):
                 transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),  # ImageNet mean and std
             ])
         train_dataset = CVDataset(ds, content_key=content_key, transform=transform)
-        val_dataset = None
+
+        val_dataset = load_dataset(data_config.dataset_name, split=val_split, streaming=True, token=data_config.hf_token)
+        val_dataset = CVDataset(val_dataset, content_key=content_key, transform=transform)
+
     elif data_config.task_type == "llm":
         if "tiny-shakespeare" in data_config.dataset_name:
             content_key = "Text"
@@ -220,6 +312,23 @@ def get_train_val_datasets(data_config: DataConfig):
             load_dataset(data_config.dataset_name, data_config.dataset_config, split=data_config.dataset_split, streaming=True, token=data_config.hf_token),
             processor,
         )
+        val_dataset = None
+    elif data_config.task_type == "node_pred":
+        try:
+            from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
+            from torch_geometric.data import Data, HeteroData
+            from torch_geometric.data.storage import GlobalStorage
+
+            torch.serialization.add_safe_globals([Data, HeteroData, DataEdgeAttr, DataTensorAttr, GlobalStorage])
+
+        except ImportError:
+            pass
+        # OGB may prompt for dataset download/update via input(); always answer "yes" to avoid hanging.
+        with _default_input("y"):
+            dataset = PygNodePropPredDataset(name="ogbn-arxiv", root="data")
+        data = dataset[0]
+
+        train_dataset = GraphDataset(data=data, repeat=True, uid_seed=0)
         val_dataset = None
 
     elif data_config.task_type == "image_gen":

@@ -15,6 +15,7 @@ def get_optimizer_factory(config: OptimConfig) -> Callable[[Iterable[torch.nn.Pa
             lr=config.adam_lr,
             weight_decay=config.adam_weight_decay,
             betas=(config.adam_betas1, config.adam_betas2),
+            eps=config.adam_epsilon,
         )
     elif config.type == "sgd":
         return lambda *args, **kwargs: torch.optim.SGD(
