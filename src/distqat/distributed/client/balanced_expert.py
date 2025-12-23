@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional, Tuple
+import time
 
 import torch
 import torch.nn as nn
@@ -14,7 +15,7 @@ from distqat.distributed.client.balancer import ExpertBalancer
 from distqat.distributed.client.expert import DUMMY
 
 logger = get_logger(__name__)
-
+logger.setLevel("DEBUG")
 
 class BalancedRemoteExpert(nn.Module):
     """
@@ -122,7 +123,6 @@ class _BalancedRemoteModuleCall(torch.autograd.Function):
         backward_task_size: float,
         *inputs: torch.Tensor,
     ) -> Tuple[torch.Tensor, ...]:
-        logger.debug("TRAINER: Forward")
         # Note: *inputs are flattened input tensors that follow the expert's info['input_schema']
         # detach to avoid pickling the computation graph
         ctx.expert_balancer, ctx.info = expert_balancer, info
@@ -135,12 +135,24 @@ class _BalancedRemoteModuleCall(torch.autograd.Function):
             serialize_torch_tensor(inp, proto.compression)
             for inp, proto in zip(inputs, nested_flatten(info["forward_schema"]))
         ]
+        
+        input_bytes = sum(t.ByteSize() for t in serialized_tensors)
+        
         while True:
             try:
                 with expert_balancer.use_another_expert(forward_task_size) as chosen_expert:
-                    logger.debug(f"TRAINER: Forwarding to expert {chosen_expert.uid}")
                     forward_request = runtime_pb2.ExpertRequest(uid=chosen_expert.uid, tensors=serialized_tensors)
+                    
+                    start_time = time.time()
                     outputs = chosen_expert.stub.forward(forward_request, timeout=forward_timeout)
+                    elapsed = time.time() - start_time
+                    
+                    output_bytes = sum(t.ByteSize() for t in outputs.tensors)
+                    logger.debug(
+                        f"[TRAINER:Forward] uid={chosen_expert.uid} "
+                        f"sent={input_bytes / 1e6:.2f}MB recv={output_bytes / 1e6:.2f}MB "
+                        f"time={elapsed:.4f}s"
+                    )
                 break
             except KeyboardInterrupt:
                 raise
@@ -153,7 +165,6 @@ class _BalancedRemoteModuleCall(torch.autograd.Function):
     @staticmethod
     @once_differentiable
     def backward(ctx, *grad_outputs) -> Tuple[Optional[torch.Tensor], ...]:
-        logger.debug("TRAINER: Backward")
 
         grad_outputs_cpu = tuple(tensor.cpu() for tensor in grad_outputs)
         inputs_and_grad_outputs = tuple(nested_flatten((ctx.saved_tensors, grad_outputs_cpu)))
@@ -162,11 +173,24 @@ class _BalancedRemoteModuleCall(torch.autograd.Function):
             serialize_torch_tensor(tensor, proto.compression)
             for tensor, proto in zip(inputs_and_grad_outputs, backward_schema)
         ]
+        
+        input_bytes = sum(t.ByteSize() for t in serialized_tensors)
+        
         while True:
             try:
                 with ctx.expert_balancer.use_another_expert(ctx.backward_task_size) as chosen_expert:
                     backward_request = runtime_pb2.ExpertRequest(uid=chosen_expert.uid, tensors=serialized_tensors)
+                    
+                    start_time = time.time()
                     grad_inputs = chosen_expert.stub.backward(backward_request, timeout=ctx.backward_timeout)
+                    elapsed = time.time() - start_time
+                    
+                    output_bytes = sum(t.ByteSize() for t in grad_inputs.tensors)
+                    logger.debug(
+                        f"[TRAINER:Backward] uid={chosen_expert.uid} "
+                        f"sent={input_bytes / 1e6:.2f}MB recv={output_bytes / 1e6:.2f}MB "
+                        f"time={elapsed:.4f}s"
+                    )
                 break
             except KeyboardInterrupt:
                 raise

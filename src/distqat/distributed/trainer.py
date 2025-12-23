@@ -217,10 +217,16 @@ class SwarmTrainer:
         # Skip the batching loop and use the batch directly
         if self.config.data.task_type == "node_pred" or self.config.data.task_type == "rl":
             try:
+                t0 = time.time()
                 uid, batch = next(self.dataloader)
+                dt = time.time() - t0
+                logger.debug(f"[TRAINER:DataLoader] Fetch time: {dt:.4f}s")
             except StopIteration:
                 self.dataloader = self.get_dataloader()
+                t0 = time.time()
                 uid, batch = next(self.dataloader)
+                dt = time.time() - t0
+                logger.debug(f"[TRAINER:DataLoader] Fetch time (reload): {dt:.4f}s")
             inputs = batch["inputs"]
             labels = batch["labels"]
             if inner_step % 10 == 0:
@@ -234,10 +240,16 @@ class SwarmTrainer:
             while samples_needed > 0:
                 if self.remaining_batch is None:
                     try:
+                        t0 = time.time()
                         uid, batch = next(self.dataloader)
+                        dt = time.time() - t0
+                        logger.debug(f"[TRAINER:DataLoader] Fetch time: {dt:.4f}s")
                     except StopIteration:
                         self.dataloader = self.get_dataloader()
+                        t0 = time.time()
                         uid, batch = next(self.dataloader)
+                        dt = time.time() - t0
+                        logger.debug(f"[TRAINER:DataLoader] Fetch time (reload): {dt:.4f}s")
                     self.remaining_batch = batch
                 
                 current_inputs = self.remaining_batch["inputs"]

@@ -1,4 +1,5 @@
 import pickle
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import torch
@@ -7,12 +8,15 @@ from torch.autograd.function import once_differentiable
 
 from hivemind.compression import deserialize_torch_tensor, serialize_torch_tensor
 from hivemind.proto import runtime_pb2
+from hivemind.utils import get_logger
 from hivemind.utils.nested import nested_compare, nested_flatten, nested_pack
 
 from distqat.distributed.utils.networking import Endpoint
 from distqat.distributed.utils.grpc import ChannelCache
 from distqat.distributed.proto import swarm_runtime_pb2_grpc as swarm_runtime_grpc
 
+logger = get_logger(__name__)
+logger.setLevel("DEBUG")
 
 DUMMY = torch.empty(0, requires_grad=True)  # dummy tensor that triggers autograd in RemoteExpert
 
@@ -109,8 +113,19 @@ class _RemoteModuleCall(torch.autograd.Function):
             serialize_torch_tensor(inp, proto.compression)
             for inp, proto in zip(inputs, nested_flatten(info["forward_schema"]))
         ]
+        
+        input_bytes = sum(t.ByteSize() for t in serialized_tensors)
 
+        start_time = time.time()
         outputs = stub.forward(runtime_pb2.ExpertRequest(uid=ctx.uid, tensors=serialized_tensors))
+        elapsed = time.time() - start_time
+        
+        output_bytes = sum(t.ByteSize() for t in outputs.tensors)
+        logger.debug(
+            f"[RemoteExpert:Forward] uid={uid} "
+            f"sent={input_bytes / 1e6:.2f}MB recv={output_bytes / 1e6:.2f}MB "
+            f"time={elapsed:.4f}s"
+        )
 
         deserialized_outputs = [deserialize_torch_tensor(tensor) for tensor in outputs.tensors]
 
@@ -126,8 +141,19 @@ class _RemoteModuleCall(torch.autograd.Function):
             serialize_torch_tensor(tensor, proto.compression)
             for tensor, proto in zip(inputs_and_grad_outputs, backward_schema)
         ]
+        
+        input_bytes = sum(t.ByteSize() for t in serialized_tensors)
 
+        start_time = time.time()
         grad_inputs = ctx.stub.backward(runtime_pb2.ExpertRequest(uid=ctx.uid, tensors=serialized_tensors))
+        elapsed = time.time() - start_time
+        
+        output_bytes = sum(t.ByteSize() for t in grad_inputs.tensors)
+        logger.debug(
+            f"[RemoteExpert:Backward] uid={ctx.uid} "
+            f"sent={input_bytes / 1e6:.2f}MB recv={output_bytes / 1e6:.2f}MB "
+            f"time={elapsed:.4f}s"
+        )
 
         deserialized_grad_inputs = [deserialize_torch_tensor(tensor) for tensor in grad_inputs.tensors]
         return (DUMMY, None, None, None, *deserialized_grad_inputs)

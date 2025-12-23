@@ -5,7 +5,7 @@ os.environ['HF_DATASETS_CACHE'] = '/simdata/pahrendt/datasets'
 from distqat.models import ResNet50Full
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from distqat.data import CVDataset, SyntheticImageNetDataset
+from distqat.data import CVDataset
 from torchvision import transforms
 import torch
 import time

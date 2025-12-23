@@ -22,6 +22,7 @@ class DataConfig(BaseModel):
     dataset_config: Optional[str] = None
     dataset_split: Optional[str] = "train"
     hf_token: Optional[str] = None
+    dataset_path: Optional[str] = None
 
     @field_validator("hf_token", mode="before")
     @classmethod
@@ -37,6 +38,7 @@ class DataConfig(BaseModel):
     num_workers: int = 1
     shuffle_buffer_size: int = 8192
 
+    # BFloat16 is not fully supported by the current version of the code, so better use FP16 instead
     precision: Literal["fp16-mixed", "bf16-mixed", "32-true"] = "fp16-mixed"
     task_type: Literal["cv", "llm" , "speech", "image_gen", "node_pred", "rl"] = "cv"
     full_model_name: str = "EleutherAI/gpt-neo-1.3B"

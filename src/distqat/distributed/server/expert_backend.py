@@ -76,7 +76,8 @@ class ExpertBackend:
             dummy_kwargs = {
                 key: sample.make_zeros(DUMMY_BATCH_SIZE, device=device) for key, sample in kwargs_schema.items()
             }
-            dummy_outputs = self.expert(*dummy_args, **dummy_kwargs)
+            with torch.no_grad(), torch.amp.autocast(device_type=self.device.type) if self.fp16 else nullcontext():
+                dummy_outputs = self.expert(*dummy_args, **dummy_kwargs)
             outputs_schema = nested_map(BatchTensorDescriptor.from_tensor, dummy_outputs)
 
         self.forward_schema = (self.args_schema, self.kwargs_schema)  # inputs for forward

@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from torchvision import datasets, transforms
 from ogb.nodeproppred import PygNodePropPredDataset
 import torch
-
+from typing import Literal
 from datasets import load_dataset
 from datasets.distributed import split_dataset_by_node
 from transformers import AutoTokenizer, Wav2Vec2Processor
@@ -140,13 +140,19 @@ class GraphDataset(IterableDataset):
             if not self.repeat:
                 break
 
-def cv_collate_fn(batch):
+def cv_collate_fn(batch, precision: Literal["fp16-mixed", "bf16-mixed", "32-true"] = "fp16-mixed"):
     import torch
+    dtype = torch.float32
+    if precision in ["fp16-mixed", "fp16"]:
+        dtype = torch.float16
+    elif precision in ["bf16-mixed", "bf16"]:
+        dtype = torch.bfloat16
     uids, batch = zip(*batch)
     images = [
-        (b["image"].to(dtype=torch.float32) if torch.is_tensor(b["image"]) else torch.as_tensor(b["image"], dtype=torch.float32))
+        (b["image"].to(dtype=dtype) if torch.is_tensor(b["image"]) else torch.as_tensor(b["image"], dtype=dtype))
         for b in batch
     ]
+    
     labels = [torch.as_tensor(b["label"], dtype=torch.long) for b in batch]
     return uids, {
         "inputs": torch.stack(images, dim=0),
@@ -219,7 +225,7 @@ def graph_collate_fn(batch, hidden_dim: int):
 
 def collate_fn(data_config: DataConfig, model_config: ModelConfig):
     if data_config.task_type == "cv" or data_config.task_type == "image_gen":
-        return cv_collate_fn
+        return lambda batch: cv_collate_fn(batch, data_config.precision)
     elif data_config.task_type == "llm":
         return llm_collate_fn
     elif data_config.task_type == "speech":
@@ -242,7 +248,7 @@ def get_train_val_datasets(data_config: DataConfig):
         tuple: (train_loader, val_loader) - PyTorch DataLoaders for training and validation
     """
     if data_config.task_type == "cv":
-        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True, token=data_config.hf_token)
+        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True if data_config.dataset_path is None else False, token=data_config.hf_token, cache_dir=data_config.dataset_path)
         content_key = "image"
         val_split = "validation"
         # For CV tasks, use dataset-specific normalization stats
