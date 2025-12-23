@@ -101,19 +101,19 @@ class SwarmClient:
 
 
         # Start data server
-        self.data_server_proc = subprocess.Popen(
-            [
-                sys.executable, "src/distqat/distributed/data_server.py",
-                "--config-path", self.config.path,
-                "--network-initial-peers", json.dumps(self.config.network.initial_peers),
-            ],
-            stdout=open(self.log_dir / "data_server.log", "w"),
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        # self.data_server_proc = subprocess.Popen(
+        #     [
+        #         sys.executable, "src/distqat/distributed/data_server.py",
+        #         "--config-path", self.config.path,
+        #         "--network-initial-peers", json.dumps(self.config.network.initial_peers),
+        #     ],
+        #     stdout=open(self.log_dir / "data_server.log", "w"),
+        #     stderr=subprocess.STDOUT,
+        #     text=True,
+        # )
 
-        logging.setup_file_logging(self.log_dir / "client.log", wandb_enabled=self.wandb_enabled)
-        logging.track_log_file(self.log_dir / "data_server.log", self.wandb_enabled)
+        # logging.setup_file_logging(self.log_dir / "client.log", wandb_enabled=self.wandb_enabled)
+        # logging.track_log_file(self.log_dir / "data_server.log", self.wandb_enabled)
         
 
 
@@ -302,7 +302,7 @@ class SwarmClient:
                 logger.info(f"  Expert {expert_id}: has {list(info['stages'].keys())}, missing {info['missing_stages']}")
 
             # Manage trainer processes based on discovered pipelines
-            self.manage_trainers(complete_pipelines)
+            # self.manage_trainers(complete_pipelines)
 
             # Reassign incomplete experts 
             self.reassign_incomplete_experts(incomplete_pipelines)

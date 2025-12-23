@@ -158,3 +158,17 @@ To inspect the resolved config at runtime log `cfg.model_dump()` from custom scr
 - **No metrics in W&B** – confirm `wandb login` succeeded everywhere and that the monitor is launched with `--wandb-run-id` when orchestrating multiple processes.
 
 - **How do I run a baseline without the swarm?** – launch `start_trainer_client.py` to start the data server and then `trainer.py --run-locally --trainer-id "-1" --config-path "configs/resnet18.yaml" --network-initial-peers "[\"/ip4/127.0.0.1/tcp/50000/p2p/<peer-id>\"]"` to run a fully local model.
+
+## Evaluation (offline)
+You can evaluate a **baseline checkpoint** (local `BaselineModel`, no DHT/data-server required) on a `train`/`validation`/`test` split:
+
+```bash
+python scripts/evaluate.py \
+  --config-path configs/resnet18.yaml \
+  --split test \
+  --checkpoint-path checkpoints/resnet18/baseline/checkpoint_last.pt
+```
+
+Notes:
+- If `--checkpoint-path` is omitted, the script uses `<checkpoint_dir>/baseline/checkpoint_last.pt` from the config.
+- For CIFAR-10, `--split validation` maps to the HF `test` split (since CIFAR-10 has no separate validation split).

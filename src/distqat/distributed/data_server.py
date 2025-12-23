@@ -23,7 +23,6 @@ from distqat.config import parse_args, Config
 from distqat.data import get_train_val_datasets, collate_fn
 from distqat.utils.hash import hash64, _to_bytes
 from distqat.distributed.model import SwarmBaselineModel
-from distqat.distributed.trainer import SwarmTrainer
 from distqat.utils.buffer import RolloutBuffer
 
 
@@ -387,9 +386,6 @@ def run_server(cfg: Config):
                                 pass
 
                         step += 1
-
-
-                
         else:
             while not stop_evt.is_set():
                 train_ds, _ = get_train_val_datasets(cfg.data)

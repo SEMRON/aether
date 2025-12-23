@@ -41,7 +41,7 @@ logger = get_logger(__name__)
 DISABLE_QUANT = True
 
 class Orchestrator(BaseOrchestrator):
-    def __init__(self, config_path: str, public_ip=None, num_servers=1, delete_checkpoints=False):
+    def __init__(self, config_path: str, public_ip=None, num_servers=1, delete_checkpoints=False, no_baseline_trainer=False):
         super().__init__(
             config_path=config_path,
             public_ip=public_ip,
@@ -49,6 +49,7 @@ class Orchestrator(BaseOrchestrator):
         )
         self.num_servers = num_servers
         self.delete_checkpoints = delete_checkpoints
+        self.no_baseline_trainer = no_baseline_trainer
     async def start(self):
         ensure_no_leftover_distqat_processes()
 
@@ -83,12 +84,13 @@ class Orchestrator(BaseOrchestrator):
 
         # Wait for data server to be ready (the client starts it)
         # We consider it ready when the log contains the startup line from start_manager(...)
-        wait_for_data_server_ready(client_proc=self.client_proc, ds_log_path=ds_log_path, deadline=20)
+        # wait_for_data_server_ready(client_proc=self.client_proc, ds_log_path=ds_log_path, deadline=20)
 
 
         # Spawn baseline model trainer
-        print(f"ORCHESTRATOR: Spawning baseline model trainer")
-        self.baseline_model_trainer_proc = run_baseline_model_trainer_proc(config_path=self.config_path, network_initial_peers=initial_peers_json, public_ip=self.public_ip, disable_quant=self.disable_quant, log_dir=self.config.log_dir)
+        if not self.no_baseline_trainer:
+            print(f"ORCHESTRATOR: Spawning baseline model trainer")
+            self.baseline_model_trainer_proc = run_baseline_model_trainer_proc(config_path=self.config_path, network_initial_peers=initial_peers_json, public_ip=self.public_ip, disable_quant=self.disable_quant, log_dir=self.config.log_dir)
 
         print(f"ORCHESTRATOR: Starting to spawn servers")
 
@@ -125,8 +127,17 @@ class Orchestrator(BaseOrchestrator):
 @click.option("--config-path", type=str, default="configs/resnet18.yaml")
 @click.option("--num-servers", type=int, default=1)
 @click.option("--delete-checkpoints", is_flag=True, default=False, help="Delete checkpoint directory before starting the run")
+@click.option("--no-baseline-trainer", is_flag=True, default=False, help="Disable baseline trainer")
 @from_pydantic(Config)
-def main(public_ip: Optional[str], config_path: str, num_servers: int, delete_checkpoints: bool, config: Config, **_kwargs):
+def main(
+    public_ip: Optional[str],
+    config_path: str,
+    num_servers: int,
+    delete_checkpoints: bool,
+    no_baseline_trainer: bool,
+    config: Config,
+    **_kwargs,
+):
     """Run the same local orchestrator flow as the old argparse entrypoint."""
     cfg = parse_yaml_file_as(Config, config_path)
     base_dict = cfg.model_dump(exclude_unset=True)
@@ -147,7 +158,13 @@ def main(public_ip: Optional[str], config_path: str, num_servers: int, delete_ch
             yaml.dump(merged_cfg.model_dump(mode="json"), temp_config_file)
 
         async def run():
-            orch = Orchestrator(config_path=temp_config_path, public_ip=resolved_public_ip, num_servers=num_servers, delete_checkpoints=delete_checkpoints)
+            orch = Orchestrator(
+                config_path=temp_config_path,
+                public_ip=resolved_public_ip,
+                num_servers=num_servers,
+                delete_checkpoints=delete_checkpoints,
+                no_baseline_trainer=no_baseline_trainer,
+            )
             try:
                 await orch.start()
                 await orch.wait()

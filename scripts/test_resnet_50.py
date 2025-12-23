@@ -5,7 +5,7 @@ os.environ['HF_DATASETS_CACHE'] = '/simdata/pahrendt/datasets'
 from distqat.models import ResNet50Full
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from distqat.data import CVDataset
+from distqat.data import CVDataset, SyntheticImageNetDataset
 from torchvision import transforms
 import torch
 import time
@@ -15,8 +15,11 @@ model = ResNet50Full(num_classes=1000, num_channels=3)
 
 # print(model)
 
-ds = load_dataset("ILSVRC/imagenet-1k", split="train", streaming=True)
 
+ds = load_dataset("ILSVRC/imagenet-1k", split="train", streaming=True)
+# ds = SyntheticImageNetDataset(img_size=224, num_classes=1000, seed=42)
+# torch.backends.cudnn.benchmark = True
+# torch.set_float32_matmul_precision("high")
 transform = transforms.Compose([
                     transforms.Lambda(lambda img: img.convert("RGB")),
                     transforms.Resize(232),
@@ -42,21 +45,23 @@ def cv_collate_fn(batch):
     
 loader = DataLoader(
     ds,                                 # yields (uid, sample) or sample
-    batch_size=512,
-    num_workers=1,
-    pin_memory=False,                         # copy to SHM, pinning unnecessary here
+    batch_size=1024,
+    num_workers=16,
+    pin_memory=True,
     drop_last=True,
     shuffle=False,                            # shuffle ignored for IterableDataset
     collate_fn=cv_collate_fn,
+    persistent_workers=True,
     prefetch_factor=2,
 )
 
-model = model.to("cuda")
+model = model.to("cuda")#.half()
 optimizer = torch.optim.Adam(model.parameters(), lr=4e-4, weight_decay=0.1, betas=(0.9, 0.95))
 criterion = torch.nn.CrossEntropyLoss()
 
 
 start_time = time.time()
+# scaler = torch.amp.GradScaler('cuda')
 for epoch in range(10):
     # You can try to estimate length by dividing a fixed subset size by batch size if known, for IterableDataset set total to None
     with tqdm(loader, desc=f"Epoch {epoch}", unit="batch") as pbar:
@@ -65,12 +70,23 @@ for epoch in range(10):
             inputs, labels = batch["inputs"], batch["labels"]
             inputs = inputs.to("cuda")
             labels = labels.to("cuda")
+            # with torch.amp.autocast("cuda", dtype=torch.bfloat16):  # or fp16
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            # compute loss in fp32 for a bit more numerical stability
+            loss = criterion(outputs.float(), labels)
             loss.backward()
             optimizer.step()
-            optimizer.zero_grad()
-            pbar.set_postfix({"loss": loss.item()})
+            # scaler.scale(loss).backward()
+            # scaler.step(optimizer)
+            # scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            # pbar.set_postfix({"loss": loss.item()})
+            if i % 10 == 0:
+                pbar.set_postfix({"loss": float(loss.detach().cpu())})
+            
+            if i == 100:
+                break
     end_time = time.time()
     print(f"Epoch {epoch} time: {end_time - start_time}")
     start_time = end_time
+    break

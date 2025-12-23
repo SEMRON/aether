@@ -23,7 +23,10 @@ from distqat.distributed.optim.diloco import TrainingState
 from distqat.sharding import register_process, get_outer_step, set_outer_step_if_greater
 from distqat.models.wav2vec2 import get_feat_extract_output_lengths
 from distqat.distributed.data_client import DataClient
-
+from distqat.data import get_train_val_datasets
+from torch.utils.data import DataLoader
+from distqat.distributed.data_server import BufferedShuffleIterable
+from distqat.data import collate_fn
 
 logger = get_logger(__name__)
 logger.setLevel('DEBUG')
@@ -72,7 +75,7 @@ class SwarmTrainer:
 
         self.process_id = self.model.dht.peer_id.to_string()
         register_process(self.model.dht, self.config.experiment_prefix, ttl=300.0)
-        self.shm_client = DataClient(host=self.config.data_server.ipc_host, port=int(self.config.data_server.ipc_port), authkey=self.config.data_server.ipc_key.encode())
+        # self.shm_client = DataClient(host=self.config.data_server.ipc_host, port=int(self.config.data_server.ipc_port), authkey=self.config.data_server.ipc_key.encode())
 
         self.batch_size = self.config.diloco.batch_size_per_step
         if self.use_baseline_model and self.config.world_size > 0:
@@ -85,6 +88,8 @@ class SwarmTrainer:
         logger.info(f"  - Micro-batch size: {self.batch_size}")
         logger.info(f"  - Accumulation steps: {self.gradient_accumulation_steps}")
         logger.info(f"  - Effective batch size: {effective_batch}")
+
+        self.dataloader = self.get_dataloader()
         
         self.remaining_batch = None
         self.remaining_release = None
@@ -92,6 +97,21 @@ class SwarmTrainer:
     def parameters(self):
         yield from self.model.parameters()
 
+
+    def get_dataloader(self):
+        ds, _ = get_train_val_datasets(self.config.data)
+        # ds = BufferedShuffleIterable(ds, buffer_size=self.config.data.shuffle_buffer_size, seed=0)
+        loader = DataLoader(
+            ds,                                 # yields (uid, sample) or sample
+            batch_size=self.batch_size,
+            num_workers=self.config.data.num_workers,
+            pin_memory=True,
+            drop_last=True,
+            shuffle=False,
+            collate_fn=collate_fn(self.config.data, self.config.model_pipeline.pipeline[0]),
+            persistent_workers=self.config.data.num_workers > 0,
+        )
+        return iter(loader)
 
     def task_type_loss(self, inputs, outputs, labels, step=None):
         if self.config.data.task_type == "cv":
@@ -196,12 +216,15 @@ class SwarmTrainer:
         # For graph data, each batch is already complete and can't be sliced (because it's a tuple)
         # Skip the batching loop and use the batch directly
         if self.config.data.task_type == "node_pred" or self.config.data.task_type == "rl":
-            batch, release = self.shm_client.next_batch()
+            try:
+                uid, batch = next(self.dataloader)
+            except StopIteration:
+                self.dataloader = self.get_dataloader()
+                uid, batch = next(self.dataloader)
             inputs = batch["inputs"]
             labels = batch["labels"]
             if inner_step % 10 == 0:
                 logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
-            releases_to_call.append(release)
         else:
             inputs_list = []
             labels_list = []
@@ -210,7 +233,12 @@ class SwarmTrainer:
             
             while samples_needed > 0:
                 if self.remaining_batch is None:
-                    self.remaining_batch, self.remaining_release = self.shm_client.next_batch()
+                    try:
+                        uid, batch = next(self.dataloader)
+                    except StopIteration:
+                        self.dataloader = self.get_dataloader()
+                        uid, batch = next(self.dataloader)
+                    self.remaining_batch = batch
                 
                 current_inputs = self.remaining_batch["inputs"]
                 current_labels = self.remaining_batch["labels"]

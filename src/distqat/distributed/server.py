@@ -20,11 +20,37 @@ from distqat.optimizers import get_diloco_optimizer_cls_kwargs
 from distqat.distributed.utils.reassignment_monitor import ReassignmentMonitorThread
 from distqat.utils import logging
 
+import subprocess
+import sys
+import json
 import wandb
 
 use_hivemind_log_handler("in_root_logger")
 logger = get_logger(__name__)
 
+def start_trainer(cfg: Config, expert_index: int):
+    logger.info(f"Starting trainer for expert {expert_index}")
+    logger.info(f"Initial peers: {cfg.network.initial_peers}")
+    initial_peers_json = json.dumps(cfg.network.initial_peers)
+    cmd = [
+        sys.executable, "src/distqat/distributed/trainer.py",
+        "--trainer-id", str(expert_index),
+        "--config-path", cfg.path,
+        "--network-initial-peers", initial_peers_json,
+    ]
+
+
+    log_path = cfg.log_dir / f"trainer_{expert_index}.log"
+    log_file = open(log_path, "w")
+    try:
+        proc = subprocess.Popen(cmd, stdout=log_file, stderr=log_file, text=True)
+        logger.info(f"Spawned trainer {expert_index} with PID {proc.pid}")
+        logging.track_log_file(log_path)
+        return proc
+    except Exception as e:
+        logger.error(f"Failed to spawn trainer {expert_index}: {e}")
+        log_file.close()
+        return None
 
 def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: Optional[int] = None, listen_on: str = "0.0.0.0:*", announce_endpoint: Optional[str] = None, disable_quant: bool = False):
     # Create DHT for expert discovery
@@ -123,7 +149,12 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
     inner_steps = cfg.diloco.inner_steps
     store_expert_batch_size(dht, expert_uid, batch_size, expiration=60, wait=True)
     store_expert_inner_steps(dht, expert_uid, inner_steps, expiration=60, wait=True)
-    logger.info(f"Stored batch_size_per_step={batch_size} for expert {expert_uid}")
+
+    logger.info(f"Server created for expert {expert_uid} with batch_size_per_step={batch_size} and inner_steps={inner_steps}")
+
+    # Start trainer if its a head node
+    if stage_index == 0:
+        start_trainer(cfg, expert_index)
 
     return server, dht, expert_uid
 

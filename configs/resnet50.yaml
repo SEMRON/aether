@@ -7,7 +7,7 @@ data:
   dataset_name: "ILSVRC/imagenet-1k"
   dataset_split: "train"
   task_type: "cv"
-  num_workers: 0
+  num_workers: 16
   precision: "fp16-mixed"
   num_channels: 3 # change to 1 for mnist
   img_size: 224 # change to 224 for imagenet
