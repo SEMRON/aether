@@ -28,6 +28,7 @@ from distqat.utils import logging
 
 logger = get_logger(__name__)
 use_hivemind_log_handler("in_root_logger")
+# logger.setLevel("DEBUG")
 
 class SwarmClient:
     def __init__(
@@ -302,16 +303,16 @@ class SwarmClient:
                 logger.debug(f"  Expert {expert_id}: has {list(info['stages'].keys())}, missing {info['missing_stages']}")
 
             # Manage trainer processes based on discovered pipelines (spawns trainers for complete pipelines and exits when all finish).
-            self.manage_trainers(complete_pipelines)
-            if self.done:
-                break
+            # self.manage_trainers(complete_pipelines)
+            # if self.done:
+            #     break
 
             # Reassign incomplete experts 
-            self.reassign_incomplete_experts(incomplete_pipelines)
+            # self.reassign_incomplete_experts(incomplete_pipelines)
 
             # Avoid delaying exit after completion.
-            if not self.done:
-                time.sleep(self.refresh_period)
+            # if not self.done:
+            #     time.sleep(self.refresh_period)
     
     def shutdown(self):
         # Stop all trainer processes
