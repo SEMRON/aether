@@ -109,6 +109,37 @@ class SwarmTrainer:
     def parameters(self):
         yield from self.model.parameters()
 
+    def _fetch_batch_with_retry(self):
+        """
+        Fetch a batch from the dataloader, handling worker crashes and dataset exhaustion.
+        Returns (uid, batch) tuple.
+        """
+        try:
+            t0 = time.time()
+            uid, batch = next(self.dataloader)
+            dt = time.time() - t0
+            logger.debug(f"[TRAINER:DataLoader] Fetch time: {dt:.4f}s")
+            return uid, batch
+        except StopIteration:
+            logger.info("Dataset exhausted, recreating dataloader for next epoch")
+            self.dataloader = self.get_dataloader()
+            t0 = time.time()
+            uid, batch = next(self.dataloader)
+            dt = time.time() - t0
+            logger.debug(f"[TRAINER:DataLoader] Fetch time (reload): {dt:.4f}s")
+            return uid, batch
+        except RuntimeError as e:
+            if "DataLoader worker" in str(e) and ("exited unexpectedly" in str(e) or "is killed" in str(e)):
+                logger.warning(f"DataLoader worker crashed (likely OOM), recreating dataloader: {e}")
+                logger.warning("Consider reducing num_workers in config if this happens frequently")
+                self.dataloader = self.get_dataloader()
+                t0 = time.time()
+                uid, batch = next(self.dataloader)
+                dt = time.time() - t0
+                logger.debug(f"[TRAINER:DataLoader] Fetch time (after worker crash): {dt:.4f}s")
+                return uid, batch
+            else:
+                raise
 
     def get_dataloader(self):
         ds, _ = get_train_val_datasets(self.config.data)
@@ -122,6 +153,7 @@ class SwarmTrainer:
             shuffle=False,
             collate_fn=collate_fn(self.config.data, self.config.model_pipeline.pipeline[0]),
             persistent_workers=self.config.data.num_workers > 0,
+            prefetch_factor=2 if self.config.data.num_workers > 0 else None,
         )
         return iter(loader)
 
@@ -228,17 +260,7 @@ class SwarmTrainer:
         # For graph data, each batch is already complete and can't be sliced (because it's a tuple)
         # Skip the batching loop and use the batch directly
         if self.config.data.task_type == "node_pred" or self.config.data.task_type == "rl":
-            try:
-                t0 = time.time()
-                uid, batch = next(self.dataloader)
-                dt = time.time() - t0
-                logger.debug(f"[TRAINER:DataLoader] Fetch time: {dt:.4f}s")
-            except StopIteration:
-                self.dataloader = self.get_dataloader()
-                t0 = time.time()
-                uid, batch = next(self.dataloader)
-                dt = time.time() - t0
-                logger.debug(f"[TRAINER:DataLoader] Fetch time (reload): {dt:.4f}s")
+            uid, batch = self._fetch_batch_with_retry()
             inputs = batch["inputs"]
             labels = batch["labels"]
             if inner_step % 10 == 0:
@@ -251,17 +273,7 @@ class SwarmTrainer:
             
             while samples_needed > 0:
                 if self.remaining_batch is None:
-                    try:
-                        t0 = time.time()
-                        uid, batch = next(self.dataloader)
-                        dt = time.time() - t0
-                        logger.debug(f"[TRAINER:DataLoader] Fetch time: {dt:.4f}s")
-                    except StopIteration:
-                        self.dataloader = self.get_dataloader()
-                        t0 = time.time()
-                        uid, batch = next(self.dataloader)
-                        dt = time.time() - t0
-                        logger.debug(f"[TRAINER:DataLoader] Fetch time (reload): {dt:.4f}s")
+                    uid, batch = self._fetch_batch_with_retry()
                     self.remaining_batch = batch
                 
                 current_inputs = self.remaining_batch["inputs"]
