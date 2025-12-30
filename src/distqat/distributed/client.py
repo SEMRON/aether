@@ -289,25 +289,29 @@ class SwarmClient:
         print("CLIENT: Visible multiaddresses:", dht.get_visible_maddrs(latest=True))
         while not self.done:
             # Use the enhanced dht_handler method to get both complete and incomplete pipelines
-            logger.info("=== Expert Discovery ===")
+            logger.debug("=== Expert Discovery ===")
             
             complete_pipelines, incomplete_pipelines = discover_experts(dht, config)
 
-            logger.info(f"Expert Discovery Summary:")
-            logger.info(f"  Complete pipelines: {len(complete_pipelines)} - {list(complete_pipelines.keys())}")
-            logger.info(f"  Incomplete pipelines: {len(incomplete_pipelines)} - {list(incomplete_pipelines.keys())}")
+            logger.debug(f"Expert Discovery Summary:")
+            logger.debug(f"  Complete pipelines: {len(complete_pipelines)} - {list(complete_pipelines.keys())}")
+            logger.debug(f"  Incomplete pipelines: {len(incomplete_pipelines)} - {list(incomplete_pipelines.keys())}")
             
             # Log details about incomplete pipelines
             for expert_id, info in incomplete_pipelines.items():
-                logger.info(f"  Expert {expert_id}: has {list(info['stages'].keys())}, missing {info['missing_stages']}")
+                logger.debug(f"  Expert {expert_id}: has {list(info['stages'].keys())}, missing {info['missing_stages']}")
 
-            # Manage trainer processes based on discovered pipelines
-            # self.manage_trainers(complete_pipelines)
+            # Manage trainer processes based on discovered pipelines (spawns trainers for complete pipelines and exits when all finish).
+            self.manage_trainers(complete_pipelines)
+            if self.done:
+                break
 
             # Reassign incomplete experts 
             self.reassign_incomplete_experts(incomplete_pipelines)
 
-            time.sleep(self.refresh_period)
+            # Avoid delaying exit after completion.
+            if not self.done:
+                time.sleep(self.refresh_period)
     
     def shutdown(self):
         # Stop all trainer processes

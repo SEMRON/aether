@@ -5,12 +5,13 @@ import torch
 from hivemind.utils import get_logger, get_dht_time
 from hivemind.utils.logging import use_hivemind_log_handler
 from hivemind.dht import DHT
+from contextlib import nullcontext
 
 from distqat.config import Config, ModelPipelineConfig
 from distqat.distributed.client import BalancedRemoteExpert
 from distqat.distributed.optim.collaborative import CollaborativeOptimizer
 from distqat.models import get_model
-from distqat.optimizers import get_diloco_optimizer_cls_kwargs
+from distqat.optimizers import get_diloco_optimizer_cls_kwargs, get_regular_optimizer_factory
 from distqat.attach import attach_quantizers
 from distqat.utils.metrics import MetricsLogger, LocalMetrics
 from distqat.utils.baseline_checkpoints import BaselineCheckpointSaver, load_checkpoint
@@ -157,7 +158,7 @@ class SwarmModel(torch.nn.Module):
     def evaluate(self, step):
         pass
     
-    def post_optimizer_callback(self, global_step, loss):
+    def post_optimizer_callback(self, global_step, loss, **_kwargs):
         self.metrics_logger.on_step_end(global_step, loss)
 
     
@@ -203,17 +204,29 @@ class SwarmBaselineModel(torch.nn.Module):
         # Currently only used by PPO and would only work with full stage models
         if trainer_id == -2:
             run_id = f"{config.experiment_prefix}_0"
-        optimizer_cls, optimizer_kwargs = get_diloco_optimizer_cls_kwargs(
-            run_id=run_id, 
-            config=config.diloco,
-        )
-        self.optimizer = optimizer_cls(
-            params=model.parameters(),
-            avg_only_params=avg_only_params,
-            expert=model.model_pipeline[0] if config.model_pipeline.pipeline[0].model_name == "biggan.full" else None,
-            dht=self.dht,
-            **optimizer_kwargs,
-        )
+        is_biggan = config.model_pipeline.pipeline[0].model_name == "biggan.full"
+        expert = model.model_pipeline[0] if is_biggan else None
+
+        if config.no_diloco:
+            # Regular (local) optimizer: do NOT pass DiLoCo-only kwargs like avg_only_params/dht.
+            optim_factory = get_regular_optimizer_factory(config.diloco)
+            self.optimizer = (
+                optim_factory(params=model.parameters(), expert=expert)
+                if expert is not None
+                else optim_factory(params=model.parameters())
+            )
+        else:
+            optimizer_cls, optimizer_kwargs = get_diloco_optimizer_cls_kwargs(
+                run_id=run_id,
+                config=config.diloco,
+            )
+            self.optimizer = optimizer_cls(
+                params=model.parameters(),
+                avg_only_params=avg_only_params,
+                expert=expert,
+                dht=self.dht,
+                **optimizer_kwargs,
+            )
 
         self.checkpoint_dir = config.checkpoint_dir
         self.checkpoint_keep_history = config.checkpoint_keep_history
@@ -224,7 +237,7 @@ class SwarmBaselineModel(torch.nn.Module):
             self.checkpoint_saver = BaselineCheckpointSaver(
                 model=self.model,
                 checkpoint_dir=self.checkpoint_dir / "baseline",
-                update_period=10,
+                update_period=config.checkpoint_update_period,
                 keep_history=self.checkpoint_keep_history
             )
             self.checkpoint_saver.start()
@@ -245,10 +258,14 @@ class SwarmBaselineModel(torch.nn.Module):
 
     def shutdown(self):
         try:
-            if isinstance(self.optimizer, CollaborativeOptimizer):
-                if self.checkpoint_saver is not None:
-                    self.checkpoint_saver.stop.set()
-                    self.checkpoint_saver.join()
+            if self.checkpoint_saver is not None:
+                self.checkpoint_saver.stop.set()
+                self.checkpoint_saver.join(timeout=10)
+        except Exception as e:
+            logger.warning(f"Error shutting down checkpoint saver: {e}")
+
+        try:
+            if hasattr(self.optimizer, "shutdown") and callable(getattr(self.optimizer, "shutdown")):
                 self.optimizer.shutdown()
         except Exception as e:
             logger.warning(f"Error shutting down optimizer: {e}")
@@ -259,23 +276,29 @@ class SwarmBaselineModel(torch.nn.Module):
             logger.warning(f"Error shutting down DHT: {e}")
 
     def forward(self, x):
-        if isinstance(x, tuple):
-            x = tuple(item.to(self.device) if hasattr(item, "to") else item for item in x)
-            y = self.model(x)
-        else:
-            x = x.to(self.device)
-            y = self.model(x)
-        if isinstance(y, tuple):
-            y = tuple(item.cpu() for item in y)
-        else:
-            y = y.cpu()
-        return y
+        with torch.amp.autocast(device_type=self.device) if self.config.data.precision == "fp16-mixed" else nullcontext():
+            if isinstance(x, tuple):
+                x = tuple(item.to(self.device) if hasattr(item, "to") else item for item in x)
+                y = self.model(x)
+            else:
+                x = x.to(self.device)
+                y = self.model(x)
+            return y
 
     def evaluate(self, step):
         """Evaluate the model every eval_every steps"""
         self.model.evaluate(step)
 
-    def post_optimizer_callback(self, global_step, loss):
-        self.optimizer.step()
+    def post_optimizer_callback(self, global_step, loss, *, scaler=None, **_kwargs):
+        """
+        Perform an optimizer step for the baseline (local) model.
+
+        If a GradScaler is provided, use it to safely step under fp16 mixed precision.
+        """
+        if scaler is not None:
+            scaler.step(self.optimizer)
+            scaler.update()
+        else:
+            self.optimizer.step()
         self.optimizer.zero_grad()
         self.metrics_logger.on_step_end(global_step, loss)

@@ -72,6 +72,7 @@ class SwarmServer(threading.Thread):
         start=False,
         checkpoint_dir=None,
         checkpoint_keep_history: bool = True,
+        checkpoint_update_period: int = 1800,
         **kwargs,
     ):
         super().__init__()
@@ -84,7 +85,7 @@ class SwarmServer(threading.Thread):
         self.conn_handlers = [ConnectionHandler(listen_on, self.experts) for _ in range(num_connection_handlers)]
         if checkpoint_dir is not None:
             self.checkpoint_saver = CheckpointSaver(
-                expert_backends, checkpoint_dir, update_period, keep_history=checkpoint_keep_history
+                expert_backends, checkpoint_dir, checkpoint_update_period, keep_history=checkpoint_keep_history
             )
         else:
             self.checkpoint_saver = None

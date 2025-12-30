@@ -141,6 +141,7 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         stage_index=stage_index,
         checkpoint_dir=cfg.checkpoint_dir if cfg.checkpoint_dir else None,
         checkpoint_keep_history=cfg.checkpoint_keep_history,
+        checkpoint_update_period=cfg.checkpoint_update_period,
     )
 
     # Store batch_size_per_step in DHT for this expert
@@ -152,7 +153,7 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
 
     logger.info(f"Server created for expert {expert_uid} with batch_size_per_step={batch_size} and inner_steps={inner_steps}")
 
-    # Start trainer if its a head node
+    # Start trainer if it's a head node
     if stage_index == 0:
         start_trainer(cfg, expert_index)
 

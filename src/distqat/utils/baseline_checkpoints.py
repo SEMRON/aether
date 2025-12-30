@@ -72,7 +72,7 @@ class BaselineCheckpointSaver(threading.Thread):
         *,
         keep_history: bool = True,
     ):
-        super().__init__()
+        super().__init__(daemon=True, name="BaselineCheckpointSaver")
         # assert is_directory(checkpoint_dir)
         self.model = model
         self.update_period = update_period

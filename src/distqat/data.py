@@ -274,6 +274,10 @@ def get_train_val_datasets(data_config: DataConfig):
                 transforms.ToTensor(),
                 transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),  # ImageNet mean and std
             ])
+
+        if data_config.dataset_path is not None:
+            ds = ds.to_iterable_dataset(num_shards=data_config.dataset_num_shards)
+        ds = ds.shuffle(buffer_size=data_config.shuffle_buffer_size, seed=data_config.shuffle_seed)
         train_dataset = CVDataset(ds, content_key=content_key, transform=transform)
 
         val_dataset = load_dataset(data_config.dataset_name, split=val_split, streaming=True, token=data_config.hf_token)

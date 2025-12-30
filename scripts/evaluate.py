@@ -151,7 +151,8 @@ def _build_eval_dataset(cfg: Config, split: str):
         else:
             raise ValueError(f"Unsupported cv dataset_name: {ds_name}")
 
-        ds = load_dataset(ds_name, split=use_split, streaming=True, token=data_cfg.hf_token)
+        ds = load_dataset(data_cfg.dataset_name, split=use_split, streaming=True if data_cfg.dataset_path is None else False, token=data_cfg.hf_token, cache_dir=data_cfg.dataset_path)
+
         return CVDataset(ds, content_key=content_key, transform=transform)
 
     if data_cfg.task_type == "llm":

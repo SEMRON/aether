@@ -327,6 +327,7 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
         self.collaboration_state = self._fetch_state()
         self.lock_collaboration_state, self.collaboration_state_updated = Lock(), Event()
         self.lock_local_progress, self.should_report_progress = Lock(), Event()
+        self._shutdown_evt = Event()
         self.progress_reporter = Thread(target=self.report_training_progress, daemon=True, name=f"{self}.reporter")
         self.progress_reporter.start()
         self.collaboration_state_updater = Thread(
@@ -514,8 +515,13 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
 
     def report_training_progress(self):
         """Periodically publish metadata and the current number of samples accumulated towards the next step"""
-        while self.is_alive():
-            self.should_report_progress.wait()
+        while self.is_alive() and not self._shutdown_evt.is_set():
+            # Wait until progress should be reported, but also allow clean shutdown.
+            self.should_report_progress.wait(timeout=1.0)
+            if self._shutdown_evt.is_set() or not self.is_alive():
+                break
+            if not self.should_report_progress.is_set():
+                continue
             self.should_report_progress.clear()
             with self.lock_local_progress:
                 current_time = get_dht_time()
@@ -528,26 +534,34 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
                     client_mode=self.averager.client_mode,
                 )
 
-            self.dht.store(
-                key=self.training_progress_key,
-                subkey=self._local_public_key,
-                value=local_state_info.dict(),
-                expiration_time=current_time + self.metadata_expiration,
-                return_future=True,
-            )
+            try:
+                self.dht.store(
+                    key=self.training_progress_key,
+                    subkey=self._local_public_key,
+                    value=local_state_info.dict(),
+                    expiration_time=current_time + self.metadata_expiration,
+                    return_future=True,
+                )
+            except OSError:
+                break
 
     def check_collaboration_state_periodically(self):
         """
         Periodically check the training progress from all peers. Trigger update after num_inner_steps total steps
         """
-        while self.is_alive():
+        while self.is_alive() and not self._shutdown_evt.is_set():
             time_to_next_update = max(0.0, self.collaboration_state.next_fetch_time - get_dht_time())
             if self.collaboration_state_updated.wait(time_to_next_update):
                 self.collaboration_state_updated.clear()
                 continue  # if state was updated externally, reset timer
 
             with self.lock_collaboration_state:
-                self.collaboration_state = self._fetch_state()
+                if self._shutdown_evt.is_set() or not self.is_alive():
+                    break
+                try:
+                    self.collaboration_state = self._fetch_state()
+                except OSError:
+                    break
 
     def _fetch_state(self) -> CollaborationState:
         """Read performance statistics reported by peers, estimate progress towards next batch
@@ -643,18 +657,32 @@ class DiLoCoOptimizer(DecentralizedOptimizerBase):
 
     def shutdown(self):
         """Shutdown the collaborative optimizer, cleaning up resources and notifying peers"""
+        # Stop background threads first so they don't touch DHT while we are shutting it down.
+        self._shutdown_evt.set()
+        # Wake any waiters so join doesn't stall.
+        self.should_report_progress.set()
+        self.collaboration_state_updated.set()
         logger.debug("Shutting down averager...")
-        self.averager.shutdown()
+        try:
+            self.averager.shutdown()
+        except Exception:
+            pass
         logger.debug("Sending goodbye to peers...")
-        self.dht.store(
-            self.training_progress_key,
-            subkey=self._local_public_key,
-            value=None,
-            expiration_time=get_dht_time() + self.metadata_expiration,
-        )
-        self.collaboration_state_updater.join(timeout=5)
-        self.progress_reporter.join(timeout=5)
+        try:
+            self.dht.store(
+                self.training_progress_key,
+                subkey=self._local_public_key,
+                value=None,
+                expiration_time=get_dht_time() + self.metadata_expiration,
+            )
+        except OSError:
+            pass
+        self.collaboration_state_updater.join(timeout=10)
+        self.progress_reporter.join(timeout=10)
         logger.debug(f"{self.__class__.__name__} is shut down.")
 
     def __del__(self):
-        self.shutdown()
+        try:
+            self.shutdown()
+        except Exception:
+            pass

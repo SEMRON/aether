@@ -11,6 +11,8 @@ import torch.nn as nn
 import numpy as np
 
 import click
+import os
+from pathlib import Path
 from hivemind.utils.logging import get_logger
 from hivemind.dht.crypto import RSASignatureValidator
 from hivemind.dht.schema import SchemaValidator
@@ -71,6 +73,16 @@ class SwarmTrainer:
                 trainer_id=self.trainer_id,
                 disable_quant=disable_quant,
             )
+
+        # Mixed precision stability: GradScaler prevents overflow from corrupting weights.
+        self.scaler = None
+        if (
+            self.use_baseline_model
+            and self.config.data.precision == "fp16-mixed"
+            and isinstance(self.device, str)
+            and self.device.startswith("cuda")
+        ):
+                self.scaler = torch.amp.GradScaler()
     
 
         self.process_id = self.model.dht.peer_id.to_string()
@@ -115,15 +127,15 @@ class SwarmTrainer:
 
     def task_type_loss(self, inputs, outputs, labels, step=None):
         if self.config.data.task_type == "cv":
-            return F.cross_entropy(outputs, labels)
+            return F.cross_entropy(outputs.float(), labels.to(outputs.device))
         elif self.config.data.task_type == "llm":
             # shift for next-token prediction
             shift_logits = outputs[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
 
             loss = F.cross_entropy(
-                shift_logits.permute(0, 2, 1), 
-                shift_labels,
+                shift_logits.float().permute(0, 2, 1),
+                shift_labels.to(shift_logits.device),
                 reduction="none",
             )
             loss = loss.mean()
@@ -304,7 +316,14 @@ class SwarmTrainer:
                 outputs = self.model(inputs)
             loss = self.task_type_loss(inputs, outputs, labels, step)
             loss = loss / self.gradient_accumulation_steps
-            loss.backward()
+            if not torch.isfinite(loss):
+                logger.warning(f"Non-finite loss at step={step} (inner_step={inner_step}): {loss.item()}. Skipping update.")
+                self.model.zero_grad(set_to_none=True)
+                return
+            if self.scaler is not None:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
         
 
         # Only step optimizer if we have accumulated enough gradients
@@ -312,8 +331,16 @@ class SwarmTrainer:
             # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
             if (inner_step + 1) % self.gradient_accumulation_steps == 0:
                 if self.config.diloco.max_grad_norm is not None:
+                    # TODO: scaling needs to be implemented for server models as well, otherwise comparison with baseline model is not fair
+                    if self.scaler is not None and hasattr(self.model, "optimizer"):
+                        # clip on unscaled gradients under AMP
+                        self.scaler.unscale_(self.model.optimizer)
                     nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.diloco.max_grad_norm))
-                self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
+                self.model.post_optimizer_callback(
+                    step,
+                    loss.item() * self.gradient_accumulation_steps,
+                    scaler=self.scaler,
+                )
         else:
             # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
             self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)

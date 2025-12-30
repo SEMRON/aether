@@ -37,6 +37,8 @@ class DataConfig(BaseModel):
 
     num_workers: int = 1
     shuffle_buffer_size: int = 8192
+    shuffle_seed: Optional[int] = None
+    dataset_num_shards: int = 1
 
     # BFloat16 is not fully supported by the current version of the code, so better use FP16 instead
     precision: Literal["fp16-mixed", "bf16-mixed", "32-true"] = "fp16-mixed"
@@ -246,8 +248,9 @@ class Config(BaseModel):
     data_server: DataServerConfig = DataServerConfig()
     checkpoint_dir: Optional[Path] = None
     checkpoint_keep_history: bool = True
+    checkpoint_update_period: int = 1800
     log_dir: Path = Path("logs") / experiment_prefix
-    
+    no_diloco: bool = False
     # World size is used to scale the batch size of the baseline model
     world_size: int = 1
     

@@ -11,6 +11,7 @@ data:
   precision: "fp16-mixed"
   num_channels: 3 # change to 1 for mnist
   img_size: 224 # change to 224 for imagenet
+  dataset_num_shards: 267
 
 diloco:
   inner_optim:
@@ -21,7 +22,7 @@ diloco:
     adam_betas2: 0.95
   outer_optim:
     type: "sgd"
-    sgd_lr: 0.07
+    sgd_lr: 0.2
     sgd_momentum: 0.9
     sgd_nesterov: True
   inner_steps: 500
@@ -31,6 +32,7 @@ diloco:
   max_refresh_period: 30.0
   averaging_timeout: 180.0
   verbose: true
+  max_grad_norm: 1.0
 
 model_pipeline:
   pipeline:
