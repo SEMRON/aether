@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
@@ -48,7 +49,17 @@ class MetricsLogger:
             self.last_reported_collaboration_step = -1
             self.trainer_id = trainer_id
             self._latest_metrics_by_step: Dict[int, Dict[str, Any]] = {}
+            self._metrics_lock = threading.Lock()  # Lock for thread-safe access to _latest_metrics_by_step
             self.key_suffix = str(key_suffix)
+            self._heartbeat_stop = threading.Event()
+            # Start heartbeat thread to refresh metrics periodically
+            # Refresh every 60 seconds to keep metrics alive (expiration is 300 seconds)
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                daemon=True,
+                name=f"MetricsLogger-heartbeat-{trainer_id}",
+            )
+            self._heartbeat_thread.start()
             logger.debug(f"CollaborativeCallback initialized")
 
     def _store_metrics(self, payload: Dict[str, Any]) -> None:
@@ -68,26 +79,27 @@ class MetricsLogger:
         Important: DHT values are stored per-subkey. If we store episodic metrics separately from loss,
         we'd overwrite the existing value. This merge keeps them together.
         """
-        base = self._latest_metrics_by_step.get(step, {})
-        merged = dict(base)
+        with self._metrics_lock:
+            base = self._latest_metrics_by_step.get(step, {})
+            merged = dict(base)
 
-        # Merge scalar sub-dict.
-        scalars = dict(merged.get("scalars") or {})
-        patch_scalars = patch.get("scalars") or {}
-        if isinstance(patch_scalars, dict):
-            scalars.update(patch_scalars)
-        merged.update(patch)
-        merged["scalars"] = scalars
+            # Merge scalar sub-dict.
+            scalars = dict(merged.get("scalars") or {})
+            patch_scalars = patch.get("scalars") or {}
+            if isinstance(patch_scalars, dict):
+                scalars.update(patch_scalars)
+            merged.update(patch)
+            merged["scalars"] = scalars
 
-        # Ensure required identity fields are always present.
-        merged["step"] = step
-        merged["trainer_id"] = self.trainer_id
+            # Ensure required identity fields are always present.
+            merged["step"] = step
+            merged["trainer_id"] = self.trainer_id
 
-        self._latest_metrics_by_step[step] = merged
-        # Prevent unbounded growth if training runs for a long time.
-        if len(self._latest_metrics_by_step) > 256:
-            oldest_step = min(self._latest_metrics_by_step.keys())
-            self._latest_metrics_by_step.pop(oldest_step, None)
+            self._latest_metrics_by_step[step] = merged
+            # Prevent unbounded growth if training runs for a long time.
+            if len(self._latest_metrics_by_step) > 256:
+                oldest_step = min(self._latest_metrics_by_step.keys())
+                self._latest_metrics_by_step.pop(oldest_step, None)
         self._store_metrics(merged)
 
     @staticmethod
@@ -208,3 +220,35 @@ class MetricsLogger:
         if lengths:
             mean_l = float(np.mean(np.asarray(lengths, dtype=np.float64)))
             self.log_scalar("charts/episodic_length", mean_l, step)
+
+    def _heartbeat_loop(self) -> None:
+        """
+        Background thread that periodically refreshes the latest metrics to prevent expiration.
+        
+        This ensures the monitor can always find trainer metrics even if training slows down
+        or stops temporarily. Refreshes every 60 seconds (well before the 300 second expiration).
+        """
+        # Refresh interval: 60 seconds (well before 300 second expiration)
+        refresh_interval = min(60.0, self.statistics_expiration / 5.0)
+        
+        while not self._heartbeat_stop.wait(refresh_interval):
+            try:
+                # Refresh the latest metrics to keep them from expiring
+                with self._metrics_lock:
+                    if not self._latest_metrics_by_step:
+                        continue
+                    # Get the most recent step
+                    latest_step = max(self._latest_metrics_by_step.keys())
+                    latest_metrics = self._latest_metrics_by_step[latest_step].copy()
+                
+                # Refresh the metrics in DHT (outside the lock to avoid blocking)
+                self._store_metrics(latest_metrics)
+                logger.debug(f"Heartbeat: Refreshed metrics for step {latest_step}")
+            except Exception as e:
+                logger.debug(f"Heartbeat: Failed to refresh metrics: {e}")
+
+    def shutdown(self) -> None:
+        """Stop the heartbeat thread and clean up resources."""
+        self._heartbeat_stop.set()
+        if self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=5.0)

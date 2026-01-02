@@ -240,10 +240,11 @@ class Orchestrator(BaseOrchestrator):
                 network_initial_peers=initial_peers_json, 
                 public_ip=self.public_ip, 
                 idx=idx, 
+                stage_index=0 if len(self.config.model_pipeline.pipeline) == 1 else None,
                 disable_quant=self.disable_quant,
                 wandb_run_id=self.wandb_run_id
             )
-            time.sleep(3)
+            # time.sleep(3)
 
         print(f"ORCHESTRATOR: Servers spawned")
 
@@ -301,7 +302,7 @@ def main(
     merged_dict = always_merger.merge(base_dict, override_dict)
     merged_cfg = cfg.model_validate(merged_dict)
 
-    merged_cfg.world_size = num_servers
+    merged_cfg.world_size = max(1, num_servers)
 
     resolved_public_ip = public_ip or get_public_ip()
     print("Public IP:", resolved_public_ip)

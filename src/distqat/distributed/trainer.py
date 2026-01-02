@@ -76,13 +76,13 @@ class SwarmTrainer:
 
         # Mixed precision stability: GradScaler prevents overflow from corrupting weights.
         self.scaler = None
-        if (
-            self.use_baseline_model
-            and self.config.data.precision == "fp16-mixed"
-            and isinstance(self.device, str)
-            and self.device.startswith("cuda")
-        ):
-                self.scaler = torch.amp.GradScaler()
+        # if (
+        #     self.use_baseline_model
+        #     and self.config.data.precision == "fp16-mixed"
+        #     and isinstance(self.device, str)
+        #     and self.device.startswith("cuda")
+        # ):
+        #         self.scaler = torch.amp.GradScaler()
     
 
         self.process_id = self.model.dht.peer_id.to_string()
@@ -90,12 +90,17 @@ class SwarmTrainer:
         # self.shm_client = DataClient(host=self.config.data_server.ipc_host, port=int(self.config.data_server.ipc_port), authkey=self.config.data_server.ipc_key.encode())
 
         self.batch_size = self.config.diloco.batch_size_per_step
-        if self.use_baseline_model and self.config.world_size > 0:
-            self.batch_size *= self.config.world_size
-            
         self.gradient_accumulation_steps = self.config.diloco.gradient_accumulation_steps
+        self.inner_steps = self.config.diloco.inner_steps
         
+        # if self.use_baseline_model and self.config.world_size > 0:
+        #     self.batch_size *= self.config.world_size
+        if self.use_baseline_model:
+            self.gradient_accumulation_steps *= self.config.world_size
+            # self.inner_steps *= self.config.world_size
+            
         effective_batch = self.batch_size * self.gradient_accumulation_steps
+        
         logger.info(f"Trainer configured with:")
         logger.info(f"  - Micro-batch size: {self.batch_size}")
         logger.info(f"  - Accumulation steps: {self.gradient_accumulation_steps}")
@@ -255,122 +260,123 @@ class SwarmTrainer:
 
 
     def step(self, inner_step: int, step: int):
-        releases_to_call = []
+        for accumulation_step in range(self.gradient_accumulation_steps):
+            releases_to_call = []
 
-        # For graph data, each batch is already complete and can't be sliced (because it's a tuple)
-        # Skip the batching loop and use the batch directly
-        if self.config.data.task_type == "node_pred" or self.config.data.task_type == "rl":
-            uid, batch = self._fetch_batch_with_retry()
-            inputs = batch["inputs"]
-            labels = batch["labels"]
-            if inner_step % 10 == 0:
-                logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
-        else:
-            inputs_list = []
-            labels_list = []
+            # For graph data, each batch is already complete and can't be sliced (because it's a tuple)
+            # Skip the batching loop and use the batch directly
+            if self.config.data.task_type == "node_pred" or self.config.data.task_type == "rl":
+                uid, batch = self._fetch_batch_with_retry()
+                inputs = batch["inputs"]
+                labels = batch["labels"]
+                if inner_step % 10 == 0 and accumulation_step == 0:
+                    logger.info(f"Inner step {inner_step} of {self.inner_steps}")
+            else:
+                inputs_list = []
+                labels_list = []
+                
+                samples_needed = self.batch_size
+                
+                while samples_needed > 0:
+                    if self.remaining_batch is None:
+                        uid, batch = self._fetch_batch_with_retry()
+                        self.remaining_batch = batch
+                    
+                    current_inputs = self.remaining_batch["inputs"]
+                    current_labels = self.remaining_batch["labels"]
+                    available = current_inputs.shape[0]
+                    
+                    take = min(samples_needed, available)
+                    
+                    inputs_list.append(current_inputs[:take])
+                    labels_list.append(current_labels[:take])
+                    
+                    samples_needed -= take
+                    
+                    if take == available:
+                        releases_to_call.append(self.remaining_release)
+                        self.remaining_batch = None
+                        self.remaining_release = None
+                    else:
+                        self.remaining_batch["inputs"] = current_inputs[take:]
+                        self.remaining_batch["labels"] = current_labels[take:]
+                
+                inputs = torch.cat(inputs_list)
+                labels = torch.cat(labels_list)
+                
+                if inner_step % 10 == 0 and accumulation_step == 0:
+                    logger.info(f"Inner step {inner_step} of {self.inner_steps}")
+                    
+
             
-            samples_needed = self.batch_size
-            
-            while samples_needed > 0:
-                if self.remaining_batch is None:
-                    uid, batch = self._fetch_batch_with_retry()
-                    self.remaining_batch = batch
+            if self.config.data.task_type == "image_gen":
+                num_D_steps = self.config.biggan["num_D_steps"]
+
+                outputs = self.model((inputs, labels))
+                D_loss, G_loss = outputs[0], outputs[-1]
+                D_loss = D_loss / self.gradient_accumulation_steps
+                G_loss = G_loss / self.gradient_accumulation_steps
                 
-                current_inputs = self.remaining_batch["inputs"]
-                current_labels = self.remaining_batch["labels"]
-                available = current_inputs.shape[0]
+                # Log individual losses for GAN training diagnostics
+                if inner_step % 10 == 0:
+                    logger.info(f"Step {step}: D_loss={D_loss.item():.4f}, G_loss={G_loss.item():.4f}, D/G ratio={D_loss.item()/G_loss.item():.4f}, Sum={D_loss.item() + G_loss.item():.4f}")
                 
-                take = min(samples_needed, available)
-                
-                inputs_list.append(current_inputs[:take])
-                labels_list.append(current_labels[:take])
-                
-                samples_needed -= take
-                
-                if take == available:
-                    releases_to_call.append(self.remaining_release)
-                    self.remaining_batch = None
-                    self.remaining_release = None
+                D_loss.backward(retain_graph=inner_step % num_D_steps == 0)
+                if inner_step % num_D_steps == 0:
+                    G_loss.backward()
+                # Logging the sum for monitoring although it's not a meaningful metric
+                loss = D_loss + G_loss
+            else:
+                if self.config.data.task_type == "rl":
+                    b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values = inputs
+                    outputs = self.model((b_obs, b_actions))
                 else:
-                    self.remaining_batch["inputs"] = current_inputs[take:]
-                    self.remaining_batch["labels"] = current_labels[take:]
-            
-            inputs = torch.cat(inputs_list)
-            labels = torch.cat(labels_list)
-            
-            if inner_step % 10 == 0:
-                logger.info(f"Inner step {inner_step} of {self.config.diloco.inner_steps * self.gradient_accumulation_steps}")
+                    outputs = self.model(inputs)
+                loss = self.task_type_loss(inputs, outputs, labels, step)
+                loss = loss / self.gradient_accumulation_steps
+                if not torch.isfinite(loss):
+                    logger.warning(f"Non-finite loss at step={step} (inner_step={inner_step}): {loss.item()}. Skipping update.")
+                    self.model.zero_grad(set_to_none=True)
+                    return
+                if self.scaler is not None:
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
             
 
-        
-        if self.config.data.task_type == "image_gen":
-            num_D_steps = self.config.biggan["num_D_steps"]
-
-            outputs = self.model((inputs, labels))
-            D_loss, G_loss = outputs[0], outputs[-1]
-            D_loss = D_loss / self.gradient_accumulation_steps
-            G_loss = G_loss / self.gradient_accumulation_steps
-            
-            # Log individual losses for GAN training diagnostics
-            if inner_step % 10 == 0:
-                logger.info(f"Step {step}: D_loss={D_loss.item():.4f}, G_loss={G_loss.item():.4f}, D/G ratio={D_loss.item()/G_loss.item():.4f}, Sum={D_loss.item() + G_loss.item():.4f}")
-            
-            D_loss.backward(retain_graph=inner_step % num_D_steps == 0)
-            if inner_step % num_D_steps == 0:
-                G_loss.backward()
-            # Logging the sum for monitoring although it's not a meaningful metric
-            loss = D_loss + G_loss
-        else:
-            if self.config.data.task_type == "rl":
-                b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values = inputs
-                outputs = self.model((b_obs, b_actions))
+            # Only step optimizer if we have accumulated enough gradients
+            if self.use_baseline_model:
+                # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
+                if (inner_step + 1) % self.gradient_accumulation_steps == 0:
+                    if self.config.diloco.max_grad_norm is not None:
+                        # TODO: scaling needs to be implemented for server models as well, otherwise comparison with baseline model is not fair
+                        if self.scaler is not None and hasattr(self.model, "optimizer"):
+                            # clip on unscaled gradients under AMP
+                            self.scaler.unscale_(self.model.optimizer)
+                        nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.diloco.max_grad_norm))
+                    self.model.post_optimizer_callback(
+                        step,
+                        loss.item() * self.gradient_accumulation_steps,
+                        scaler=self.scaler,
+                    )
             else:
-                outputs = self.model(inputs)
-            loss = self.task_type_loss(inputs, outputs, labels, step)
-            loss = loss / self.gradient_accumulation_steps
-            if not torch.isfinite(loss):
-                logger.warning(f"Non-finite loss at step={step} (inner_step={inner_step}): {loss.item()}. Skipping update.")
-                self.model.zero_grad(set_to_none=True)
-                return
-            if self.scaler is not None:
-                self.scaler.scale(loss).backward()
-            else:
-                loss.backward()
-        
+                # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
+                self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
 
-        # Only step optimizer if we have accumulated enough gradients
-        if self.use_baseline_model:
-            # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
-            if (inner_step + 1) % self.gradient_accumulation_steps == 0:
-                if self.config.diloco.max_grad_norm is not None:
-                    # TODO: scaling needs to be implemented for server models as well, otherwise comparison with baseline model is not fair
-                    if self.scaler is not None and hasattr(self.model, "optimizer"):
-                        # clip on unscaled gradients under AMP
-                        self.scaler.unscale_(self.model.optimizer)
-                    nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.diloco.max_grad_norm))
-                self.model.post_optimizer_callback(
-                    step,
-                    loss.item() * self.gradient_accumulation_steps,
-                    scaler=self.scaler,
-                )
-        else:
-            # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
-            self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
-
-        if self.config.data.task_type == "image_gen":
-            if inner_step % self.config.biggan["eval_every"] == 0:
-                self.model.evaluate(step)
-        
-        for release in releases_to_call:
-            try:
-                release()
-            except Exception:
-                pass
+            if self.config.data.task_type == "image_gen":
+                if inner_step % self.config.biggan["eval_every"] == 0:
+                    self.model.evaluate(step)
+            
+            for release in releases_to_call:
+                try:
+                    release()
+                except Exception:
+                    pass
 
     def train(self):
         logger.info(f"============= Training for {self.num_total_steps} steps =============")
 
-        inner_steps = self.config.diloco.inner_steps
+        inner_steps = self.inner_steps
         outer_step = 0
         prefix = self.config.experiment_prefix
         dht = self.model.dht 
@@ -430,12 +436,12 @@ class SwarmTrainer:
             # Inner loop: exactly inner_steps batches for this peer
             inner = 0
 
-            while inner < inner_steps*self.gradient_accumulation_steps:
+            while inner < inner_steps:
                 self.step(inner_step=inner, step=step)
                 
                 # Only increment global step (optimizer step) when we actually stepped
-                if (inner + 1) % self.gradient_accumulation_steps == 0:
-                    step += 1
+                # if (inner + 1) % self.gradient_accumulation_steps == 0:
+                step += 1
                 inner += 1
                 if step >= self.num_total_steps:
                     break

@@ -154,6 +154,25 @@ python -m pip install --upgrade certifi \
 export SSL_CERT_FILE="$(python -c 'import certifi; print(certifi.where())')"
 ```
 
+### Protobuf decoding error 
+```
+Dec 31 11:11:48.344 [ERROR] [distqat.distributed.client.balanced_expert.forward:160] Tried to call forward for expert RemoteExpert(uid=full.0.105.0, endpoint=127.0.0.1:51500):
+Traceback (most recent call last):
+  File "/home/pahrendt/distqat/src/distqat/distributed/client/balanced_expert.py", line 147, in forward
+    outputs = chosen_expert.stub.forward(forward_request, timeout=forward_timeout)
+  File "/home/pahrendt/distqat/.venv/lib/python3.10/site-packages/grpc/_channel.py", line 1166, in __call__
+    return _end_unary_response_blocking(state, call, False, None)
+  File "/home/pahrendt/distqat/.venv/lib/python3.10/site-packages/grpc/_channel.py", line 996, in _end_unary_response_blocking
+    raise _InactiveRpcError(state)  # pytype: disable=not-instantiable
+grpc._channel._InactiveRpcError: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNKNOWN
+	details = "Unexpected <class 'google.protobuf.message.DecodeError'>: Error parsing message with type 'Tensor'"
+	debug_error_string = "UNKNOWN:Error received from peer ipv4:127.0.0.1:51500 {grpc_status:2, grpc_message:"Unexpected <class \'google.protobuf.message.DecodeError\'>: Error parsing message with type \'Tensor\'"}"
+>
+```
+
+In this case the batch size or gradient accumulation step size is too high causing the tensors which are send through RPC being too large. Reduce batch size or gradient accumulation step size until it works.
+
 ## Next Steps
 
 - Read the [full README](README.md) for detailed documentation

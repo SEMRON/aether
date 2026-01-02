@@ -25,8 +25,8 @@ diloco:
     sgd_lr: 0.2
     sgd_momentum: 0.9
     sgd_nesterov: True
-  inner_steps: 500
-  outer_steps: 100
+  inner_steps: 64
+  outer_steps: 1000
   batch_size_per_step: 64
   min_refresh_period: 5.0
   max_refresh_period: 30.0
@@ -57,3 +57,4 @@ world_size: 2
 device: "cuda"
 max_expert_index: 128
 log_dir: "logs/resnet50"
+checkpoint_dir: "checkpoints/resnet50"

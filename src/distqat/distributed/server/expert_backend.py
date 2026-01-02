@@ -205,18 +205,36 @@ class ExpertBackend:
         return full_state
 
     def load_full_state(self, state_dict: Dict):
-        if "stats" in state_dict:
-            self.update_count = state_dict["stats"]["updates"]
-            self.examples_processed = state_dict["stats"]["examples_processed"]
-        else:
-            logger.warning(f"Batch processing stats missing for expert {self.name}")
+        # Handle both distributed format ({"model": ..., "optimizer": ..., "stats": ...}) 
+        # and baseline format (raw state_dict)
+        if "model" in state_dict:
+            # Distributed format
+            model_state = state_dict["model"]
+            if "stats" in state_dict:
+                self.update_count = state_dict["stats"]["updates"]
+                self.examples_processed = state_dict["stats"]["examples_processed"]
+            else:
+                logger.warning(f"Batch processing stats missing for expert {self.name}")
 
-        self.expert.load_state_dict(state_dict["model"])
-
-        if "optimizer" in state_dict:
-            self.optimizer.load_state_dict(state_dict["optimizer"])
+            if "optimizer" in state_dict:
+                self.optimizer.load_state_dict(state_dict["optimizer"])
+            else:
+                logger.warning(f"Optimizer state missing for expert {self.name}")
         else:
-            logger.warning(f"Optimizer state missing for expert {self.name}")
+            # Baseline format: raw state_dict (just model weights)
+            # May have "model_pipeline.0." prefix that needs to be stripped
+            model_state = state_dict
+            logger.info(f"Loading baseline checkpoint format for expert {self.name}")
+        
+        # Strip "model_pipeline.0." prefix if present (baseline models wrap experts in model_pipeline)
+        if any(k.startswith("model_pipeline.0.") for k in model_state.keys()):
+            logger.info(f"Stripping 'model_pipeline.0.' prefix from checkpoint keys for expert {self.name}")
+            model_state = {
+                k[len("model_pipeline.0."):] if k.startswith("model_pipeline.0.") else k: v
+                for k, v in model_state.items()
+            }
+        
+        self.expert.load_state_dict(model_state, strict=False)
 
     def get_info(self) -> Dict[str, Any]:
         """Get expert parameters and stats. Used by RemoteExpert to check shapes and for distributed training coordination."""

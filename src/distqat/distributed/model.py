@@ -139,6 +139,12 @@ class SwarmModel(torch.nn.Module):
         print("SHUTDOWN Model")
 
         try:
+            if hasattr(self, "metrics_logger") and hasattr(self.metrics_logger, "shutdown"):
+                self.metrics_logger.shutdown()
+        except Exception as e:
+            logger.warning(f"Error shutting down metrics logger: {e}")
+
+        try:
             self.model.shutdown()
         except Exception as e:
             logger.warning(f"Error shutting down model: {e}")
@@ -257,6 +263,12 @@ class SwarmBaselineModel(torch.nn.Module):
         )
 
     def shutdown(self):
+        try:
+            if hasattr(self, "metrics_logger") and hasattr(self.metrics_logger, "shutdown"):
+                self.metrics_logger.shutdown()
+        except Exception as e:
+            logger.warning(f"Error shutting down metrics logger: {e}")
+
         try:
             if self.checkpoint_saver is not None:
                 self.checkpoint_saver.stop.set()

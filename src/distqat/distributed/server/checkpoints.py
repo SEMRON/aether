@@ -155,6 +155,7 @@ def load_experts(experts: Dict[str, ExpertBackend], checkpoint_dir: Path):
     Load the latest checkpoints for all experts from the specified directory.
     
     Attempts to restore each expert's state from the most recent checkpoint file.
+    Falls back to baseline checkpoint if expert-specific checkpoint doesn't exist.
     Logs warnings for experts that don't have available checkpoints.
     
     :param experts: dictionary mapping expert names to ExpertBackend instances
@@ -162,10 +163,21 @@ def load_experts(experts: Dict[str, ExpertBackend], checkpoint_dir: Path):
     """
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     assert is_directory(checkpoint_dir)
+    
+    # Check for baseline checkpoint as fallback
+    baseline_checkpoint = checkpoint_dir / "baseline" / "checkpoint_last.pt"
+    baseline_state = None
+    if baseline_checkpoint.exists():
+        logger.info(f"Found baseline checkpoint at {baseline_checkpoint}, will use as fallback")
+        baseline_state = torch.load(baseline_checkpoint)
+    
     for expert_name, expert in experts.items():
         checkpoints_folder = checkpoint_dir / expert_name
         latest_checkpoint = checkpoints_folder / "checkpoint_last.pt"
         if latest_checkpoint.exists():
             expert.load_full_state(torch.load(latest_checkpoint))
+        elif baseline_state is not None:
+            logger.info(f"Using baseline checkpoint for expert {expert_name}")
+            expert.load_full_state(baseline_state)
         else:
             logger.warning(f"Failed to load checkpoint for expert {expert_name}")
