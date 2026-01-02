@@ -116,7 +116,7 @@ class SwarmTrainer:
 
     def _fetch_batch_with_retry(self):
         """
-        Fetch a batch from the dataloader, handling worker crashes and dataset exhaustion.
+        Fetch a batch from the dataloader, handling worker crashes, dataset exhaustion, and missing files.
         Returns (uid, batch) tuple.
         """
         try:
@@ -133,8 +133,21 @@ class SwarmTrainer:
             dt = time.time() - t0
             logger.debug(f"[TRAINER:DataLoader] Fetch time (reload): {dt:.4f}s")
             return uid, batch
-        except RuntimeError as e:
-            if "DataLoader worker" in str(e) and ("exited unexpectedly" in str(e) or "is killed" in str(e)):
+        except (FileNotFoundError, RuntimeError) as e:
+            error_str = str(e).lower()
+            # Handle FileNotFoundError from missing parquet files in Hugging Face datasets
+            if isinstance(e, FileNotFoundError) or "filenotfound" in error_str:
+                logger.warning(f"FileNotFoundError in DataLoader (missing dataset file), recreating dataloader: {str(e)[:200]}")
+                logger.warning("This can happen when a parquet file is temporarily unavailable. Recreating dataloader to get a new shard assignment.")
+                time.sleep(1)  # Brief delay before retry
+                self.dataloader = self.get_dataloader()
+                t0 = time.time()
+                uid, batch = next(self.dataloader)
+                dt = time.time() - t0
+                logger.debug(f"[TRAINER:DataLoader] Fetch time (after FileNotFoundError): {dt:.4f}s")
+                return uid, batch
+            # Handle DataLoader worker crashes
+            elif isinstance(e, RuntimeError) and "DataLoader worker" in str(e) and ("exited unexpectedly" in str(e) or "is killed" in str(e)):
                 logger.warning(f"DataLoader worker crashed (likely OOM), recreating dataloader: {e}")
                 logger.warning("Consider reducing num_workers in config if this happens frequently")
                 self.dataloader = self.get_dataloader()
