@@ -16,7 +16,7 @@ model = ResNet50Full(num_classes=1000, num_channels=3)
 # print(model)
 
 
-ds = load_dataset("ILSVRC/imagenet-1k", split="train", streaming=True)
+ds = load_dataset("ILSVRC/imagenet-1k", split="train", streaming=True, cache_dir="/simdata/pahrendt/datasets")
 # ds = SyntheticImageNetDataset(img_size=224, num_classes=1000, seed=42)
 # torch.backends.cudnn.benchmark = True
 # torch.set_float32_matmul_precision("high")
@@ -45,8 +45,8 @@ def cv_collate_fn(batch):
     
 loader = DataLoader(
     ds,                                 # yields (uid, sample) or sample
-    batch_size=1024,
-    num_workers=16,
+    batch_size=64,
+    num_workers=2,
     pin_memory=True,
     drop_last=True,
     shuffle=False,                            # shuffle ignored for IterableDataset

@@ -69,6 +69,7 @@ class SwarmServer(threading.Thread):
         announce_endpoint: Optional[Endpoint] = None,
         num_connection_handlers: int = 1,
         update_period: int = 30,
+        dht_expiration: int = 300,
         start=False,
         checkpoint_dir=None,
         checkpoint_keep_history: bool = True,
@@ -77,6 +78,7 @@ class SwarmServer(threading.Thread):
     ):
         super().__init__()
         self.dht, self.experts, self.update_period = dht, expert_backends, update_period
+        self.dht_expiration = dht_expiration
         if get_port(listen_on) is None:
             listen_on = replace_port(listen_on, new_port=get_free_port())
         self.listen_on, self.port = listen_on, get_port(listen_on)
@@ -97,6 +99,7 @@ class SwarmServer(threading.Thread):
                 dht=self.dht,
                 endpoint=self.announce_endpoint,
                 update_period=self.update_period,
+                expiration=self.dht_expiration,
                 daemon=True,
             )
 

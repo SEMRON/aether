@@ -248,7 +248,7 @@ def get_train_val_datasets(data_config: DataConfig):
         tuple: (train_loader, val_loader) - PyTorch DataLoaders for training and validation
     """
     if data_config.task_type == "cv":
-        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True, token=data_config.hf_token, cache_dir=data_config.dataset_path)
+        ds = load_dataset(data_config.dataset_name, split=data_config.dataset_split, streaming=True if data_config.dataset_path is None else False, token=data_config.hf_token, cache_dir=data_config.dataset_path)
         content_key = "image"
         val_split = "validation"
         # For CV tasks, use dataset-specific normalization stats

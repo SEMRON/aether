@@ -116,6 +116,11 @@ class DilocoConfig(BaseModel):
     load_state_timeout: float = 600.0
     verbose: bool = True
 
+    target_group_size: Optional[int] = None
+    min_group_size: int = 2
+    min_matchmaking_time: float = 5.0
+    request_timeout: float = 3.0
+
     @computed_field
     @property
     def total_steps(self) -> int:
@@ -210,6 +215,9 @@ class NetworkConfig(BaseModel):
     identity_path: str = "peer_key"
     hivemind_compression: Literal["none", "fp16", "scaled-fp16", "uniform8bit", "quantile8bit", "blockwise8bit"] | None = None
     skip_load_from_peers: bool = False
+    
+    expert_dht_update_period: float = 30.0
+    expert_dht_expiration: float = 300.0
 
     # Ports configuration
     monitor_port: int = 50000

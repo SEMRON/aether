@@ -33,13 +33,22 @@ class DHTHandlerThread(threading.Thread):
     :param update_period: how often (in seconds) to update expert information in DHT
     :param kwargs: additional arguments passed to threading.Thread
     """
-    def __init__(self, experts, dht: DHT, endpoint: Endpoint, update_period: int = 5, **kwargs):
+    def __init__(
+        self,
+        experts,
+        dht: DHT,
+        endpoint: Endpoint,
+        update_period: int = 5,
+        expiration: DHTExpiration = 300,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         assert get_port(endpoint) is not None
         self.endpoint = endpoint
         self.experts = experts
         self.dht = dht
         self.update_period = update_period
+        self.expiration = expiration
         self.stop = threading.Event()
 
     def run(self) -> None:
@@ -49,9 +58,9 @@ class DHTHandlerThread(threading.Thread):
         Continuously publishes expert information to the DHT at regular intervals
         until the thread is signaled to stop.
         """
-        declare_experts(self.dht, self.experts.keys(), self.endpoint)
+        declare_experts(self.dht, self.experts.keys(), self.endpoint, expiration=self.expiration)
         while not self.stop.wait(self.update_period):
-            declare_experts(self.dht, self.experts.keys(), self.endpoint)
+            declare_experts(self.dht, self.experts.keys(), self.endpoint, expiration=self.expiration)
 
 
 def declare_experts(

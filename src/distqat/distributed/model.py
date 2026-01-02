@@ -106,7 +106,7 @@ class SwarmModel(torch.nn.Module):
         initial_peers = config.network.initial_peers
         host_maddrs = config.network.host_maddrs
         announce_maddrs = config.network.announce_maddrs
-        statistics_expiration = 300
+        statistics_expiration = config.diloco.metadata_expiration
 
         self.dht = DHT(
             start=True,
@@ -191,7 +191,7 @@ class SwarmBaselineModel(torch.nn.Module):
         hostname = gethostname()
         import base64, os
         random_b64 = base64.b64encode(os.urandom(6)).decode("utf-8")[:8]
-        statistics_expiration = 300
+        statistics_expiration = config.diloco.metadata_expiration
 
         self.device = config.device
 

@@ -84,6 +84,10 @@ def get_collaborative_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) ->
         averaging_timeout=config.averaging_timeout,
         load_state_timeout=config.load_state_timeout,
         verbose=config.verbose,
+        target_group_size=config.target_group_size,
+        min_group_size=config.min_group_size,
+        min_matchmaking_time=config.min_matchmaking_time,
+        request_timeout=config.request_timeout,
     )
 
 def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[Type[TorchOptimizer], dict]:
@@ -105,6 +109,10 @@ def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[
         averaging_timeout=config.averaging_timeout,
         load_state_timeout=config.load_state_timeout,
         verbose=config.verbose,
+        target_group_size=config.target_group_size,
+        min_group_size=config.min_group_size,
+        min_matchmaking_time=config.min_matchmaking_time,
+        request_timeout=config.request_timeout,
     )
 
 def get_regular_optimizer_cls_kwargs(config: OptimConfig) -> Tuple[Type[TorchOptimizer], dict]:

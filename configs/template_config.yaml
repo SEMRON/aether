@@ -254,6 +254,13 @@ network:
   # If true, skip loading state from peers at startup.
   skip_load_from_peers: false
 
+  # --- Time-related networking knobs (DHT + metrics TTLs) ---
+  # How often each server republishes its expert endpoint mapping into the DHT.
+  expert_dht_update_period: 30.0
+
+  # How long (seconds) expert metadata remains visible in the DHT without refresh.
+  expert_dht_expiration: 300.0
+
   # --- Ports ---
   # Port for monitoring service.
   monitor_port: 50000

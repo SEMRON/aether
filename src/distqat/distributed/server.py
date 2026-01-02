@@ -60,8 +60,7 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         host_maddrs=cfg.network.host_maddrs,
         announce_maddrs=cfg.network.announce_maddrs,
     ) 
-    visible_maddrs_str = [str(a) for a in dht.get_visible_maddrs()]
-    logger.info(f"Running DHT node on {visible_maddrs_str}, initial peers = {cfg.network.initial_peers}")
+    
     
     if stage_index is None or expert_index is None:
         logger.info("Auto-discovering pipeline gaps...")
@@ -113,6 +112,9 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
     run_id = f"{cfg.experiment_prefix}_{stage_index}"
     optim_cls, optim_kwargs = get_diloco_optimizer_cls_kwargs(run_id, cfg.diloco)
     
+    visible_maddrs_str = [str(a) for a in dht.get_visible_maddrs()]
+    logger.info(f"Running DHT node on {visible_maddrs_str}")
+    logger.debug(f"Initial peers: {cfg.network.initial_peers}")
     logger.info(f"====> RUN_ID: {optim_kwargs['run_id']}")
 
     stage_cfg = cfg.model_pipeline.pipeline[stage_index]
@@ -126,6 +128,8 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         listen_on=listen_on,
         announce_endpoint=announce_endpoint,
         device=cfg.device,
+        update_period=int(cfg.network.expert_dht_update_period),
+        dht_expiration=int(cfg.network.expert_dht_expiration),
         expert_cls=expert_cls,
         expert_uids=[expert_uid],
         hidden_dim=hidden_dim,
