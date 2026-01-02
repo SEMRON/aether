@@ -12,7 +12,6 @@ data:
   num_channels: 3 # change to 1 for mnist
   img_size: 224 # change to 224 for imagenet
   dataset_num_shards: 267
-  dataset_path: "/simdata/pahrendt/datasets"
 
 
 diloco:
@@ -66,5 +65,5 @@ world_size: 1
 device: "cuda"
 max_expert_index: 128
 log_dir: "logs/resnet50"
-checkpoint_dir: "/simdata/pahrendt/checkpoints/resnet50"
+checkpoint_dir: "checkpoints/resnet50"
 checkpoint_keep_history: true
