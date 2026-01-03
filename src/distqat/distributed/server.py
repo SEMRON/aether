@@ -120,6 +120,10 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
     stage_cfg = cfg.model_pipeline.pipeline[stage_index]
     hidden_dim = stage_cfg.hid_dim
 
+    autocast_dtype = None
+    if cfg.data.precision in ("fp16-mixed", "bf16-mixed"):
+        autocast_dtype = torch.bfloat16 if cfg.data.precision == "bf16-mixed" else torch.float16
+
     server = SwarmServer.create(
         start=False,
         initial_peers=cfg.network.initial_peers,
@@ -138,7 +142,8 @@ def start_server(cfg: Config, stage_index: Optional[int] = None, expert_index: O
         optim_kwargs=optim_kwargs,
         min_batch_size=1,
         max_batch_size=cfg.diloco.batch_size_per_step,
-        fp16=cfg.data.precision == "fp16-mixed" or cfg.data.precision == "bf16-mixed",
+        fp16=cfg.data.precision in ("fp16-mixed", "bf16-mixed"),
+        autocast_dtype=autocast_dtype,
         quant_config=cfg.quant if not disable_quant else None,
         dht=dht,
         cfg=cfg,

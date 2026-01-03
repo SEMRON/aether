@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 from contextlib import nullcontext
 import warnings
 import threading
@@ -12,7 +12,7 @@ from hivemind.utils.nested import nested_compare, nested_flatten, nested_map, ne
 from hivemind.utils.tensor_descr import DUMMY_BATCH_SIZE, BatchTensorDescriptor
 
 logger = get_logger(__name__)
-
+# logger.setLevel("DEBUG")
 
 class ExpertBackend:
     """
@@ -48,6 +48,7 @@ class ExpertBackend:
         *,
         device: torch.device,
         fp16: bool = False,
+        autocast_dtype: Optional[torch.dtype] = None,
         args_schema: Tuple[BatchTensorDescriptor, ...] = None,
         kwargs_schema: Dict[str, BatchTensorDescriptor] = None,
         outputs_schema: Union[BatchTensorDescriptor, Tuple[BatchTensorDescriptor, ...]] = None,
@@ -59,7 +60,10 @@ class ExpertBackend:
         self.expert = expert.to(device)
         self.optimizer, self.name = optimizer, name
         self.device = device
+        # Backwards-compatible: fp16=True historically meant "enable autocast".
+        # New: autocast_dtype can be torch.float16 or torch.bfloat16 to get true bf16 on CUDA.
         self.fp16 = fp16
+        self.autocast_dtype = autocast_dtype
 
         self.clip_grad_norm = clip_grad_norm
 
@@ -76,7 +80,9 @@ class ExpertBackend:
             dummy_kwargs = {
                 key: sample.make_zeros(DUMMY_BATCH_SIZE, device=device) for key, sample in kwargs_schema.items()
             }
-            with torch.no_grad(), torch.amp.autocast(device_type=self.device.type) if self.fp16 else nullcontext():
+            autocast_kwargs = {"dtype": self.autocast_dtype} if self.autocast_dtype is not None else {}
+            autocast_ctx = torch.amp.autocast(device_type=self.device.type, **autocast_kwargs) if self.fp16 else nullcontext()
+            with torch.no_grad(), autocast_ctx:
                 dummy_outputs = self.expert(*dummy_args, **dummy_kwargs)
             outputs_schema = nested_map(BatchTensorDescriptor.from_tensor, dummy_outputs)
 
@@ -108,7 +114,9 @@ class ExpertBackend:
         if args[0].shape[0] == 0:
             raise RuntimeError("Batch should contain more than 0 samples")
 
-        with torch.no_grad(), torch.amp.autocast(device_type=self.device.type) if self.fp16 else nullcontext():
+        autocast_kwargs = {"dtype": self.autocast_dtype} if self.autocast_dtype is not None else {}
+        autocast_ctx = torch.amp.autocast(device_type=self.device.type, **autocast_kwargs) if self.fp16 else nullcontext()
+        with torch.no_grad(), autocast_ctx:
             outputs = self.expert(*args, **kwargs)
 
         # Note: TaskPool requires function to accept and return a flat tuple of values, we pack/unpack it on client side
@@ -131,7 +139,9 @@ class ExpertBackend:
         """
         (args, kwargs), grad_outputs = nested_pack(inputs, structure=self.backward_schema)
 
-        with torch.enable_grad(), torch.amp.autocast(device_type=self.device.type) if self.fp16 else nullcontext():
+        autocast_kwargs = {"dtype": self.autocast_dtype} if self.autocast_dtype is not None else {}
+        autocast_ctx = torch.amp.autocast(device_type=self.device.type, **autocast_kwargs) if self.fp16 else nullcontext()
+        with torch.enable_grad(), autocast_ctx:
             args = [
                 tensor.detach().requires_grad_(True)
                 if tensor.dtype in (torch.half, torch.float, torch.double)

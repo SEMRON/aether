@@ -125,6 +125,7 @@ class SwarmServer(threading.Thread):
         quant_config: Optional[QuantConfig] = None,
         device=None,
         fp16=False,
+        autocast_dtype: Optional[torch.dtype] = None,
         no_dht=False,
         initial_peers=(),
         host_maddrs=(),
@@ -232,6 +233,11 @@ class SwarmServer(threading.Thread):
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         if isinstance(device, str):
             device = torch.device(device)
+
+        use_autocast = bool(fp16) or (autocast_dtype is not None)
+        if autocast_dtype is None and fp16:
+            autocast_dtype = torch.float16
+
         # initialize experts
         experts = {}
         for expert_uid in expert_uids:
@@ -253,7 +259,7 @@ class SwarmServer(threading.Thread):
             
             outputs_schema = None
             if pipeline_step_cfg.outputs_schema_instance_dims is not None:
-                out_dtype = torch.float16 if fp16 else torch.float32
+                out_dtype = autocast_dtype if use_autocast and autocast_dtype is not None else torch.float32
                 dummy_out = torch.empty(
                     (cfg.diloco.batch_size_per_step, *pipeline_step_cfg.outputs_schema_instance_dims),
                     dtype=out_dtype,
@@ -266,7 +272,8 @@ class SwarmServer(threading.Thread):
                 args_schema=args_schema,
                 optimizer=optim,
                 device=device,
-                fp16=fp16,
+                fp16=use_autocast,
+                autocast_dtype=autocast_dtype,
                 outputs_schema=outputs_schema,
                 clip_grad_norm=clip_grad_norm,
                 min_batch_size=min_batch_size,

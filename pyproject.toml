@@ -12,7 +12,7 @@ dependencies = [
   "pydanclick",
   "pydantic-yaml",
   "deepmerge",
-  "datasets",
+  "datasets>=4.4.1",
   "transformers",
   "hivemind @ git+https://github.com/learning-at-home/hivemind.git@937198fd364d20edeafd1044b12c3b88521d7701",
   "nicegui",

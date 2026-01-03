@@ -288,7 +288,11 @@ class SwarmBaselineModel(torch.nn.Module):
             logger.warning(f"Error shutting down DHT: {e}")
 
     def forward(self, x):
-        with torch.amp.autocast(device_type=self.device) if self.config.data.precision == "fp16-mixed" else nullcontext():
+        autocast_dtype = None
+        if self.config.data.precision in ("fp16-mixed", "bf16-mixed"):
+            autocast_dtype = torch.bfloat16 if self.config.data.precision == "bf16-mixed" else torch.float16
+            
+        with torch.amp.autocast(device_type=self.device, dtype=autocast_dtype) if autocast_dtype is not None else nullcontext():
             if isinstance(x, tuple):
                 x = tuple(item.to(self.device) if hasattr(item, "to") else item for item in x)
                 y = self.model(x)

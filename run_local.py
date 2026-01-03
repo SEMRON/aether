@@ -303,7 +303,7 @@ def main(
     merged_cfg = cfg.model_validate(merged_dict)
 
     merged_cfg.world_size = max(1, num_servers)
-    merged_cfg.data.num_workers //= num_servers
+    merged_cfg.data.num_workers //= merged_cfg.world_size
 
     resolved_public_ip = public_ip or get_public_ip()
     print("Public IP:", resolved_public_ip)
