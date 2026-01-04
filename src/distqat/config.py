@@ -4,7 +4,7 @@ from typing import List, Optional
 import json
 import click
 from pydantic import BaseModel, Field, PositiveInt, PrivateAttr, computed_field
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydanclick import from_pydantic
 from pydantic_yaml import parse_yaml_file_as
 from deepmerge import always_merger
@@ -277,6 +277,14 @@ class Config(BaseModel):
         if isinstance(value, str) and value.strip().lower() == "none":
             return None
         return value
+
+    @model_validator(mode="after")
+    def _set_paths_from_experiment_prefix(self):
+        """Append experiment_prefix to checkpoint_dir if set in YAML."""
+        if self.checkpoint_dir is not None:
+            self.checkpoint_dir = Path(self.checkpoint_dir) / self.experiment_prefix
+        
+        return self
 
 @click.command()
 @click.option("--config-path", type=str, default=None)

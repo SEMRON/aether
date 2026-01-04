@@ -1,5 +1,5 @@
 wandb_project: "distqat"
-experiment_prefix: "resnet50"
+experiment_prefix: "resnet50_baseline_64_4"
 
 data:
   # dataset_name: "ylecun/mnist"
@@ -7,12 +7,12 @@ data:
   dataset_name: "ILSVRC/imagenet-1k"
   dataset_split: "train"
   task_type: "cv"
-  num_workers: 4
+  num_workers: 16
   precision: "bf16-mixed"
   num_channels: 3 # change to 1 for mnist
   img_size: 224 # change to 224 for imagenet
   dataset_num_shards: 267
-  # dataset_path: "/simdata/pahrendt/datasets"
+  dataset_path: "/simdata/pahrendt/datasets"
 
 
 diloco:
@@ -27,15 +27,15 @@ diloco:
     sgd_lr: 0.7
     sgd_momentum: 0.9
     sgd_nesterov: True
-  inner_steps: 500
-  outer_steps: 4000
+  inner_steps: 116000
+  outer_steps: 1
   batch_size_per_step: 64
   min_refresh_period: 5.0
   max_refresh_period: 30.0
   averaging_timeout: 300.0
   verbose: true
   max_grad_norm: 1.0
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 4
   metadata_expiration: 900.0
 
 model_pipeline:
@@ -59,12 +59,12 @@ data_server:
   ipc_host: "127.0.0.1"
   ipc_port: 52555
   ipc_key: "distqat"
-  num_workers: 1
   pool_size: 32
 
 world_size: 1
 device: "cuda"
 max_expert_index: 128
-checkpoint_dir: "checkpoints"
+checkpoint_dir: "/simdata/pahrendt/checkpoints"
 checkpoint_keep_history: true
 checkpoint_update_period: 600
+no_diloco: true 
