@@ -128,7 +128,14 @@ class _BalancedRemoteModuleCall(torch.autograd.Function):
         ctx.expert_balancer, ctx.info = expert_balancer, info
         ctx.forward_timeout, ctx.backward_timeout = forward_timeout, backward_timeout
         ctx.forward_task_size, ctx.backward_task_size = forward_task_size, backward_task_size
-        inputs = tuple(tensor.cpu().detach() for tensor in inputs)
+        # NOTE: hivemind serialization does not support bf16 efficiently:
+        # - with CompressionType.NONE, bf16 tensors are serialized as fp32-sized payloads (2x bigger than fp16)
+        # - Float16Compression does not support bf16 tensors
+        # To avoid doubling network traffic for bf16-mixed, we downcast bf16 -> fp16 for transport.
+        inputs = tuple(
+            (tensor.cpu().detach().to(dtype=torch.float16) if tensor.dtype == torch.bfloat16 else tensor.cpu().detach())
+            for tensor in inputs
+        )
         ctx.save_for_backward(*inputs)
 
         serialized_tensors = [
@@ -166,7 +173,11 @@ class _BalancedRemoteModuleCall(torch.autograd.Function):
     @once_differentiable
     def backward(ctx, *grad_outputs) -> Tuple[Optional[torch.Tensor], ...]:
 
-        grad_outputs_cpu = tuple(tensor.cpu() for tensor in grad_outputs)
+        # Same transport downcast as in forward: keep wire payload small when upstream grads are bf16.
+        grad_outputs_cpu = tuple(
+            (tensor.cpu().to(dtype=torch.float16) if tensor.dtype == torch.bfloat16 else tensor.cpu())
+            for tensor in grad_outputs
+        )
         inputs_and_grad_outputs = tuple(nested_flatten((ctx.saved_tensors, grad_outputs_cpu)))
         backward_schema = tuple(nested_flatten((ctx.info["forward_schema"], ctx.info["outputs_schema"])))
         serialized_tensors = [

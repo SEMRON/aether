@@ -92,8 +92,15 @@ class ConnectionHandler(mp.context.ForkProcess):
         """
         inputs = [deserialize_torch_tensor(tensor) for tensor in request.tensors]
         future = self.experts[request.uid].forward_pool.submit_task(*inputs)
+        # NOTE: hivemind serialization sends bf16 as fp32-sized payloads under CompressionType.NONE,
+        # and Float16Compression does not support bf16 tensors. To avoid 2x network traffic under bf16-mixed,
+        # we downcast bf16 -> fp16 for transport (compute still happens under autocast on the expert).
         serialized_response = [
-            serialize_torch_tensor(tensor, proto.compression, allow_inplace=True)
+            serialize_torch_tensor(
+                (tensor.to(dtype=torch.float16) if isinstance(tensor, torch.Tensor) and tensor.dtype == torch.bfloat16 else tensor),
+                proto.compression,
+                allow_inplace=True,
+            )
             for tensor, proto in zip(await future, nested_flatten(self.experts[request.uid].outputs_schema))
         ]
 
@@ -114,7 +121,11 @@ class ConnectionHandler(mp.context.ForkProcess):
         inputs_and_grad_outputs = [deserialize_torch_tensor(tensor) for tensor in request.tensors]
         future = self.experts[request.uid].backward_pool.submit_task(*inputs_and_grad_outputs)
         serialized_response = [
-            serialize_torch_tensor(tensor, proto.compression, allow_inplace=True)
+            serialize_torch_tensor(
+                (tensor.to(dtype=torch.float16) if isinstance(tensor, torch.Tensor) and tensor.dtype == torch.bfloat16 else tensor),
+                proto.compression,
+                allow_inplace=True,
+            )
             for tensor, proto in zip(await future, nested_flatten(self.experts[request.uid].grad_inputs_schema))
         ]
         return runtime_pb2.ExpertResponse(tensors=serialized_response)
