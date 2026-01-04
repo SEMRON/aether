@@ -257,7 +257,7 @@ class Config(BaseModel):
     checkpoint_dir: Optional[Path] = None
     checkpoint_keep_history: bool = True
     checkpoint_update_period: int = 1800
-    log_dir: Path = Path("logs") / experiment_prefix
+    log_dir: Optional[Path] = None
     no_diloco: bool = False
     # World size is used to scale the batch size of the baseline model
     world_size: int = 1
@@ -280,7 +280,12 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def _set_paths_from_experiment_prefix(self):
-        """Append experiment_prefix to checkpoint_dir if set in YAML."""
+        """Set log_dir and append experiment_prefix to checkpoint_dir if set in YAML."""
+        # Set log_dir from experiment_prefix if not explicitly set
+        if self.log_dir is None:
+            self.log_dir = Path("logs") / self.experiment_prefix
+        
+        # Append experiment_prefix to checkpoint_dir if it's set
         if self.checkpoint_dir is not None:
             self.checkpoint_dir = Path(self.checkpoint_dir) / self.experiment_prefix
         

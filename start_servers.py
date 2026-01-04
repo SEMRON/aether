@@ -31,7 +31,7 @@ ROOT_DIR = Path(__file__).parent
 DISABLE_QUANT = True
 
 class Orchestrator(BaseOrchestrator):
-    def __init__(self, config_path: str, public_ip=None, num_servers=1, initial_peers=None):
+    def __init__(self, config_path: str, public_ip=None, num_servers=1, initial_peers=None, expert_index=None):
         super().__init__(
             config_path=config_path,
             public_ip=public_ip,
@@ -39,6 +39,7 @@ class Orchestrator(BaseOrchestrator):
         )
         self.num_servers = num_servers
         self.initial_peers = initial_peers
+        self.expert_index = expert_index
 
     async def start(self):
         print("ORCHESTRATOR: Starting")
@@ -51,14 +52,19 @@ class Orchestrator(BaseOrchestrator):
         initial_peers_json = json.dumps(initial_peers)
         print("Initial peers JSON:", initial_peers_json)
 
+    
         # Spawn servers
         for idx in range(self.num_servers):
+            if self.expert_index is not None:
+                idx = self.expert_index
             # Pass only what's necessary, config file handles the rest
             self.server_procs[f"server_{idx}"] = run_server_proc(
                 config_path=self.config_path, 
                 network_initial_peers=initial_peers_json, 
                 public_ip=self.public_ip, 
                 idx=idx, 
+                # This is a workaround to set the expert index to idx if there is only one stage and expert index is provided
+                stage_index=0 if (len(self.config.model_pipeline.pipeline) == 1 and self.expert_index is not None) else None,
                 disable_quant=self.disable_quant,
                 wandb_run_id=self.wandb_run_id
             )
@@ -79,9 +85,10 @@ class Orchestrator(BaseOrchestrator):
 @click.option("--public-ip", type=str, default=None)
 @click.option("--config-path", type=str, default="configs/resnet18.yaml")
 @click.option("--network-initial-peers", type=str, default=None, help="Comma-separated list of initial peers")
+@click.option("--expert-index", type=int, default=None)
 # Exclude network.initial_peers from pydanclick to avoid conflict and validation issues with List[str] vs string input
 @from_pydantic(Config, exclude=["network.initial_peers"])
-def main(num_servers: int, public_ip: Optional[str], config_path: str, network_initial_peers: Optional[str], config: Config, **kwargs):
+def main(num_servers: int, public_ip: Optional[str], config_path: str, network_initial_peers: Optional[str], config: Config, expert_index: Optional[int], **kwargs):
     cfg = parse_yaml_file_as(Config, config_path)
 
     base_dict = cfg.model_dump(exclude_unset=True)
@@ -108,6 +115,13 @@ def main(num_servers: int, public_ip: Optional[str], config_path: str, network_i
     print("Num servers:", num_servers)
     print("Initial peers:", initial_peers)
 
+
+    if expert_index is not None and num_servers != 1:
+        raise ValueError("Expert index must be None if num_servers is unequal to 1")
+
+    if expert_index is not None:
+        merged_cfg.expert_index = expert_index
+
     # Dump merged config to temp file
     fd, temp_config_path = tempfile.mkstemp(suffix=".yaml", prefix="distqat_config_")
     os.close(fd)
@@ -121,7 +135,8 @@ def main(num_servers: int, public_ip: Optional[str], config_path: str, network_i
                 config_path=temp_config_path, 
                 public_ip=resolved_public_ip, 
                 num_servers=num_servers, 
-                initial_peers=initial_peers
+                initial_peers=initial_peers,
+                expert_index=expert_index
             )
             try:
                 await orch.start()

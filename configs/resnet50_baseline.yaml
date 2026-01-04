@@ -50,9 +50,18 @@ network:
   expert_dht_expiration: 900.0
   metrics_expiration: 900.0
 
+  monitor_port: 50001
+  client_port: 51001
+  trainer_base_port: 50101
+  server_base_hostport: 50501
+  server_base_hostport_announce: 50501
+  server_base_grpcport: 51501
+  server_base_grpc_announceport: 51501
+
 param_mirror:
   enable: false
   refresh_every: 30
+
 
 
 data_server:
