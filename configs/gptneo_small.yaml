@@ -14,9 +14,8 @@ data:
   # dataset_name: "Trelis/tiny-shakespeare"
   # dataset_config: "default"
 
-
   num_workers: 0
-  precision: "bf16-mixed"
+  precision: "fp16-mixed"
   seq_len: 2048
   task_type: "llm"
   full_model_name: "EleutherAI/gpt-neo-125M"
