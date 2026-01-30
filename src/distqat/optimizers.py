@@ -7,7 +7,6 @@ from distqat.distributed.optim.collaborative import CollaborativeOptimizer
 from distqat.distributed.optim.diloco import DiLoCoOptimizer
 from distqat.config import OptimConfig, DilocoConfig
 from distqat.models.biggan.biggan_adapter import InnerGANOptimizer
-
 OptimizerFactory = Callable[..., torch.optim.Optimizer]
 
 
@@ -90,15 +89,19 @@ def get_collaborative_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) ->
         request_timeout=config.request_timeout,
     )
 
-def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[Type[TorchOptimizer], dict]:
+def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig, compression: dict) -> Tuple[Type[TorchOptimizer], dict]:
     return DiLoCoOptimizer, dict(
         run_id=run_id,
         start=True,
         outer_optimizer=get_optimizer_factory(config.outer_optim),
         inner_optimizer=get_optimizer_factory(config.inner_optim),
+        scheduler=config.scheduler,
+        num_warmup_steps=config.num_warmup_steps,
+        num_total_steps=config.inner_steps * config.outer_steps,
         num_inner_steps=config.inner_steps,
         batch_size_per_step=config.batch_size_per_step,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
+        min_local_steps=config.min_local_steps,
         min_refresh_period=config.min_refresh_period,
         max_refresh_period=config.max_refresh_period,
         default_refresh_period=config.default_refresh_period,
@@ -109,6 +112,8 @@ def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[
         averaging_timeout=config.averaging_timeout,
         load_state_timeout=config.load_state_timeout,
         verbose=config.verbose,
+        compression=compression["state_averaging_compression"],
+        state_compression=compression["state_compression"],
         target_group_size=config.target_group_size,
         min_group_size=config.min_group_size,
         min_matchmaking_time=config.min_matchmaking_time,

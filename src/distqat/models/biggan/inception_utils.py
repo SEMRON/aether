@@ -197,7 +197,7 @@ def numpy_calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
   return out
 
 
-def torch_calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
+def torch_calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-3):
   """Pytorch implementation of the Frechet Distance.
   Taken from https://github.com/bioinf-jku/TTUR
   The Frechet distance between two multivariate Gaussians X_1 ~ N(mu_1, C_1)
@@ -214,7 +214,7 @@ def torch_calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
   -- sigma2: The covariance matrix over activations, precalculated on an 
              representive data set.
   Returns:
-  --   : The Frechet Distance.
+  --   : The Frechet Distance, or None if calculation fails.
   """
 
 
@@ -223,11 +223,61 @@ def torch_calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
   assert sigma1.shape == sigma2.shape, \
     'Training and test covariances have different dimensions'
 
+  # Check for NaN/inf in inputs - indicates bad generated samples
+  if not torch.isfinite(mu1).all() or not torch.isfinite(sigma1).all():
+    print('Warning: NaN/inf detected in generated statistics (mu1/sigma1). '
+          'This usually means the generator produced invalid images.')
+    return None
+  
+  if not torch.isfinite(mu2).all() or not torch.isfinite(sigma2).all():
+    print('Warning: NaN/inf detected in reference statistics (mu2/sigma2). '
+          'Check your precomputed moments file.')
+    return None
+
   diff = mu1 - mu2
+  
+  # Compute sigma1 @ sigma2 product
+  sigma_product = sigma1.mm(sigma2)
+  
+  # Add epsilon to diagonal for numerical stability (like numpy version)
+  # Using larger eps (1e-3) to help Newton-Schulz converge more reliably
+  dim = sigma1.shape[0]
+  identity = torch.eye(dim, device=sigma1.device, dtype=sigma1.dtype)
+  sigma_product = sigma_product + eps * identity
+  
+  # Also regularize the individual covariance matrices for trace calculation
+  sigma1_reg = sigma1 + eps * identity
+  sigma2_reg = sigma2 + eps * identity
+  
   # Run 50 itrs of newton-schulz to get the matrix sqrt of sigma1 dot sigma2
-  covmean = sqrt_newton_schulz(sigma1.mm(sigma2).unsqueeze(0), 50).squeeze()  
-  out = (diff.dot(diff) +  torch.trace(sigma1) + torch.trace(sigma2)
+  covmean = sqrt_newton_schulz(sigma_product.unsqueeze(0), 50).squeeze()
+  
+  # Check if Newton-Schulz produced valid results
+  if not torch.isfinite(covmean).all():
+    # Try with even more regularization before giving up
+    sigma_product_heavy = sigma_product + 0.01 * identity
+    covmean = sqrt_newton_schulz(sigma_product_heavy.unsqueeze(0), 50).squeeze()
+    
+    if not torch.isfinite(covmean).all():
+      print('Warning: Newton-Schulz matrix sqrt failed even with heavy regularization. '
+            'Skipping FID for this step (will use previous valid value).')
+      return None
+  
+  out = (diff.dot(diff) + torch.trace(sigma1_reg) + torch.trace(sigma2_reg)
          - 2 * torch.trace(covmean))
+  
+  # Final sanity check
+  if not torch.isfinite(out):
+    print('Warning: FID calculation produced NaN/inf result.')
+    return None
+  
+  # FID should theoretically be >= 0, but numerical errors can produce small negatives
+  if out < 0:
+    if out < -1.0:
+      print(f'Warning: FID is significantly negative ({float(out):.4f}), indicates numerical issues.')
+    # Clamp to 0 - small negatives are just numerical noise
+    out = torch.clamp(out, min=0.0)
+    
   return out
 
 
@@ -247,13 +297,39 @@ def calculate_inception_score(pred, num_splits=10):
 # Inception Accuracy the labels of the generated class will be needed)
 def accumulate_inception_activations(sample, net, num_inception_images=50000):
   pool, logits, labels = [], [], []
+  nan_batch_count = 0
+  total_batches = 0
   while (torch.cat(logits, 0).shape[0] if len(logits) else 0) < num_inception_images:
     with torch.no_grad():
       images, labels_val = sample()
+      total_batches += 1
+      
+      # Check for NaN/inf in generated images
+      if not torch.isfinite(images).all():
+        nan_batch_count += 1
+        if nan_batch_count <= 3:
+          print(f'Warning: Generated images batch {total_batches} contains NaN/inf values. '
+                f'This indicates a problem with the generator (e.g., BatchNorm statistics).')
+        # Replace NaN/inf with zeros to allow evaluation to continue (will produce bad scores)
+        images = torch.nan_to_num(images, nan=0.0, posinf=1.0, neginf=-1.0)
+      
       pool_val, logits_val = net(images.float())
+      
+      # Check for NaN in inception features
+      if not torch.isfinite(pool_val).all() or not torch.isfinite(logits_val).all():
+        if nan_batch_count <= 3:
+          print(f'Warning: Inception features contain NaN/inf at batch {total_batches}.')
+        pool_val = torch.nan_to_num(pool_val, nan=0.0)
+        logits_val = torch.nan_to_num(logits_val, nan=0.0)
+      
       pool += [pool_val]
       logits += [F.softmax(logits_val, 1)]
       labels += [labels_val]
+  
+  if nan_batch_count > 0:
+    print(f'Warning: {nan_batch_count}/{total_batches} batches had NaN/inf values. '
+          f'IS and FID scores will be unreliable.')
+  
   return torch.cat(pool, 0), torch.cat(logits, 0), torch.cat(labels, 0)
 
 

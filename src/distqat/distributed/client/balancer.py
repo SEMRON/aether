@@ -82,12 +82,12 @@ class ExpertBalancer:
                     f"Could not refresh experts, dht info key contains {response}, "
                     f"will retry in {time_to_next_update}s"
                 )
+            self.last_update = get_dht_time()
+            self.update_finished.set()
+            
             if len(self.queue) == 0:
                 logger.warning("Update routine finished, but still no experts available.")
                 time.sleep(self.sleep_timeout)
-
-            self.last_update = get_dht_time()
-            self.update_finished.set()
 
     def _add_expert(self, uid: ExpertUID, endpoint: Endpoint, expiration_time: DHTExpiration):
         with self.lock:

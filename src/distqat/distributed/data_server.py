@@ -15,6 +15,8 @@ from multiprocessing.managers import BaseManager
 from multiprocessing import shared_memory
 import numpy as np
 import torch
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
 from torch.utils.data import DataLoader
 from torch.utils.data import IterableDataset, get_worker_info
 from hivemind.utils.logging import get_logger, use_hivemind_log_handler

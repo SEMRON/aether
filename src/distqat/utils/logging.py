@@ -97,3 +97,40 @@ def get_wandb_run_id(
     if result is not None and result.value is not None:
         return str(result.value)
     return None
+
+
+def get_wandb_run_id_with_retries(
+    dht: DHT, 
+    experiment_prefix: str, 
+    max_retries: int = 10, 
+    retry_delay: float = 2.0,
+    latest: bool = True
+) -> Optional[str]:
+    """
+    Retrieve wandb_run_id from DHT with retries.
+    
+    This handles the race condition where the monitor may not have stored
+    the run ID yet when workers query for it.
+    
+    :param dht: DHT instance to query
+    :param experiment_prefix: experiment prefix used as key namespace
+    :param max_retries: maximum number of retry attempts
+    :param retry_delay: delay between retries in seconds
+    :param latest: if True, get the latest value
+    :returns: wandb_run_id if found, None otherwise
+    """
+    import time
+    
+    for attempt in range(max_retries):
+        run_id = get_wandb_run_id(dht, experiment_prefix, latest=latest)
+        if run_id is not None:
+            if attempt > 0:
+                logger.info(f"Retrieved wandb_run_id from DHT after {attempt + 1} attempts: {run_id}")
+            return run_id
+        
+        if attempt < max_retries - 1:
+            logger.debug(f"wandb_run_id not found in DHT (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+    
+    logger.warning(f"wandb_run_id not found in DHT after {max_retries} attempts")
+    return None

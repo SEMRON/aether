@@ -1,0 +1,49 @@
+# Check the status of a systemd service on remote hosts
+#
+# Required variables:
+#   SERVICE_NAME: Name of the systemd service to check
+#
+# Example usage:
+#   python run-tasks.py service-status -D SERVICE_NAME=myapp
+
+- name: Validate SERVICE_NAME is defined
+  ansible.builtin.fail:
+    msg: "Required variable 'SERVICE_NAME' is not defined"
+  when: SERVICE_NAME is not defined
+
+- name: Get service status
+  ansible.builtin.systemd:
+    name: "{{ SERVICE_NAME }}"
+  become: yes
+  register: service_status
+  ignore_errors: yes
+
+- name: Get service logs (last 20 lines)
+  ansible.builtin.command:
+    cmd: "journalctl -u {{ SERVICE_NAME }} -n 20 --no-pager"
+  become: yes
+  register: service_logs
+  ignore_errors: yes
+  changed_when: false
+
+- name: Display service status
+  ansible.builtin.debug:
+    msg: |
+      === Service Status for '{{ SERVICE_NAME }}' on {{ inventory_hostname }} ===
+      Active State: {{ service_status.status.ActiveState | default('unknown') }}
+      Sub State: {{ service_status.status.SubState | default('unknown') }}
+      Enabled: {{ service_status.status.UnitFileState | default('unknown') }}
+      PID: {{ service_status.status.MainPID | default('N/A') }}
+      Memory: {{ service_status.status.MemoryCurrent | default('N/A') }}
+      Started: {{ service_status.status.ActiveEnterTimestamp | default('N/A') }}
+
+- name: Display recent logs
+  ansible.builtin.debug:
+    msg: |
+      === Recent logs for '{{ SERVICE_NAME }}' on {{ inventory_hostname }} ===
+      {{ service_logs.stdout | default('No logs available') }}
+  when: service_logs.stdout is defined and service_logs.stdout | length > 0
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ SERVICE_NAME }} is {{ service_status.status.ActiveState | default('unknown') }}"

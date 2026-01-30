@@ -1,0 +1,67 @@
+# Stop a systemd service on remote hosts
+#
+# Required variables:
+#   SERVICE_NAME: Name of the systemd service to stop
+#
+# Optional variables:
+#   DISABLE_SERVICE: Set to 'yes' to also disable the service (default: no)
+#   REMOVE_SERVICE: Set to 'yes' to remove the service file and installation (default: no)
+#
+# Example usage:
+#   python run-tasks.py stop-service -D SERVICE_NAME=myapp
+#   python run-tasks.py stop-service -D SERVICE_NAME=myapp -D DISABLE_SERVICE=yes
+#   python run-tasks.py stop-service -D SERVICE_NAME=myapp -D REMOVE_SERVICE=yes
+
+- name: Validate SERVICE_NAME is defined
+  ansible.builtin.fail:
+    msg: "Required variable 'SERVICE_NAME' is not defined"
+  when: SERVICE_NAME is not defined
+
+- name: Set default variables
+  ansible.builtin.set_fact:
+    disable_service: "{{ DISABLE_SERVICE | default('no') | bool }}"
+    remove_service: "{{ REMOVE_SERVICE | default('no') | bool }}"
+    remote_install_dir: "{{ REMOTE_INSTALL_DIR | default('/opt/' + SERVICE_NAME) }}"
+
+- name: Stop the service
+  ansible.builtin.systemd:
+    name: "{{ SERVICE_NAME }}"
+    state: stopped
+  become: yes
+  ignore_errors: yes
+  register: stop_result
+
+- name: Disable the service
+  ansible.builtin.systemd:
+    name: "{{ SERVICE_NAME }}"
+    enabled: no
+  become: yes
+  when: disable_service or remove_service
+  ignore_errors: yes
+
+- name: Remove systemd service file
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ SERVICE_NAME }}.service"
+    state: absent
+  become: yes
+  when: remove_service
+  register: service_file_removed
+
+- name: Remove installation directory
+  ansible.builtin.file:
+    path: "{{ remote_install_dir }}"
+    state: absent
+  become: yes
+  when: remove_service
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  become: yes
+  when: remove_service and service_file_removed.changed
+
+- name: Display result
+  ansible.builtin.debug:
+    msg: >-
+      Service '{{ SERVICE_NAME }}' on {{ inventory_hostname }}:
+      {% if remove_service %}removed{% elif disable_service %}stopped and disabled{% else %}stopped{% endif %}

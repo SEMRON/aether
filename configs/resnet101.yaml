@@ -7,37 +7,48 @@ data:
   dataset_name: "ILSVRC/imagenet-1k"
   dataset_split: "train"
   task_type: "cv"
-  num_workers: 0
-  precision: "fp16-mixed"
+  num_workers: 2
+  precision: "bf16-mixed"
   num_channels: 3 # change to 1 for mnist
   img_size: 224 # change to 224 for imagenet
 
 diloco:
   inner_optim:
-    type: "adam"
-    adam_lr: 4e-4
-    adam_weight_decay: 0.1
-    adam_betas1: 0.9
-    adam_betas2: 0.95
-  outer_optim:
     type: "sgd"
-    sgd_lr: 0.07
+    sgd_lr: 6.4
     sgd_momentum: 0.9
     sgd_nesterov: True
-  inner_steps: 500
-  outer_steps: 100
-  batch_size_per_step: 64
+    weight_decay: 0.0001
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.7
+    sgd_momentum: 0.9
+    sgd_nesterov: True
+  inner_steps: 64
+  outer_steps: 4000
+  batch_size_per_step: 1024
   min_refresh_period: 5.0
   max_refresh_period: 30.0
-  averaging_timeout: 180.0
   verbose: true
+  # max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+  metadata_expiration: 900.0
+  num_warmup_steps: 800
+  scheduler: "cosine"
+
+
+  averaging_timeout: 900.0
+  target_group_size: 4
+  min_group_size: 2
+  min_matchmaking_time: 600.0
+  request_timeout: 120.0
 
 model_pipeline:
   pipeline:
     - model_name: "resnet101.full"
       num_classes: 1000
-  forward_timeout: 90.0
-  backward_timeout: 180.0
+  forward_timeout: 300.0
+  backward_timeout: 600.0
 
 param_mirror:
   enable: false
@@ -51,7 +62,7 @@ data_server:
   num_workers: 1
   pool_size: 32
 
-world_size: 2
+world_size: 1
 device: "cuda"
 max_expert_index: 128
 log_dir: "logs/resnet101"

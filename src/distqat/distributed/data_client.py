@@ -4,6 +4,8 @@ from multiprocessing import resource_tracker
 from queue import Full
 import numpy as np
 import torch
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
 
 class ServerManager(BaseManager): pass
 

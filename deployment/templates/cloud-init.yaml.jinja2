@@ -1,0 +1,41 @@
+#cloud-config
+
+{% if root_password %}
+chpasswd:
+  list: |
+    root:{{ root_password }}
+  expire: False
+{% endif %}
+ssh_pwauth: false
+
+packages:
+  - cockpit
+  - qemu-guest-agent
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/disable-root-password-login.conf
+    content: |
+      PermitRootLogin prohibit-password
+      PasswordAuthentication no
+    owner: root:root
+    permissions: '0644'
+
+runcmd:
+  - systemctl restart sshd
+  - systemctl enable --now cockpit.socket
+  - systemctl enable --now qemu-guest-agent
+  - mkdir -p /etc/cockpit
+  - echo [WebService] > /etc/cockpit/cockpit.conf
+  - echo AllowUnencrypted=false >> /etc/cockpit/cockpit.conf
+  - echo PasswordAuthentication=no >> /etc/cockpit/cockpit.conf
+  - systemctl restart cockpit.socket
+
+users:
+  - name: {{ username }}
+    ssh_authorized_keys:
+{% for key in ssh_keys %}
+      - {{ key }}
+{% endfor %}
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    groups: sudo
+    shell: /bin/bash

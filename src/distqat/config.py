@@ -3,6 +3,7 @@ from typing import List, Optional
 
 import json
 import click
+from click.core import ParameterSource
 from pydantic import BaseModel, Field, PositiveInt, PrivateAttr, computed_field
 from pydantic import field_validator, model_validator
 from pydanclick import from_pydantic
@@ -21,8 +22,10 @@ class DataConfig(BaseModel):
     dataset_name: str = "mnist"
     dataset_config: Optional[str] = None
     dataset_split: Optional[str] = "train"
+    dataset_split_validation: Optional[str] = "validation"
     hf_token: Optional[str] = None
     dataset_path: Optional[str] = None
+    dataset_iid_path: Optional[str] = None
 
     @field_validator("hf_token", mode="before")
     @classmethod
@@ -54,6 +57,10 @@ class DataConfig(BaseModel):
     
     # Speech-specific
     sampling_rate: int = 16000
+
+    # Graph/Node prediction-specific (for NeighborLoader)
+    neighbor_sample_sizes: List[int] = [10, 10]  # Number of neighbors to sample per hop
+    neighbor_batch_size: int = 512  # Number of target nodes per mini-batch
 
 
 class OptimConfig(BaseModel):
@@ -96,15 +103,23 @@ class PPOConfig(BaseModel):
     gae_lambda: float = 0.95
     vf_coef: float = 0.5
     target_kl: Optional[float] = None
+    # Use globally averaged model weights for rollout collection in distributed training.
+    # This ensures all workers generate data under the same policy (after DiLoCo outer step),
+    # (hopefully) improving convergence by avoiding off-policy distribution mismatch.
+    use_averaged_policy_for_rollouts: bool = False
 
 class DilocoConfig(BaseModel):
     inner_optim: OptimConfig = OptimConfig(type="adam")
     outer_optim: OptimConfig = OptimConfig(type="sgd")
+    scheduler: str = "none"
+    num_warmup_steps: int = 0
     inner_steps: int = 50
     outer_steps: int = 10
     batch_size_per_step: int = 64
     max_grad_norm: Optional[float] = None
     gradient_accumulation_steps: int = 1
+    # Minimum local inner steps before joining leader-triggered averaging (None = inner_steps - 1)
+    min_local_steps: Optional[int] = None
     min_refresh_period: float = 0.5
     max_refresh_period: float = 30
     default_refresh_period: float = 3
@@ -213,8 +228,9 @@ class NetworkConfig(BaseModel):
     use_ipfs: bool = False
     client_mode: bool = False
     identity_path: str = "peer_key"
-    hivemind_compression: Literal["none", "fp16", "scaled-fp16", "uniform8bit", "quantile8bit", "blockwise8bit"] | None = None
-    skip_load_from_peers: bool = False
+    hivemind_compression: Literal["none", "fp16", "scaled-fp16", "uniform8bit", "quantile8bit", "blockwise8bit", "fp16and8bit"] | None = None
+    skip_load_from_peers: bool = False  # Skip downloading state from peers on startup
+    skip_load_checkpoints: bool = False  # Skip loading from checkpoint files on startup
     
     expert_dht_update_period: float = 30.0
     expert_dht_expiration: float = 300.0
@@ -258,7 +274,7 @@ class Config(BaseModel):
     checkpoint_keep_history: bool = True
     checkpoint_update_period: int = 1800
     log_dir: Optional[Path] = None
-    no_diloco: bool = False
+    disable_quant: bool = True
     # World size is used to scale the batch size of the baseline model
     world_size: int = 1
     
@@ -280,15 +296,24 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def _set_paths_from_experiment_prefix(self):
-        """Set log_dir and append experiment_prefix to checkpoint_dir if set in YAML."""
-        # Set log_dir from experiment_prefix if not explicitly set
-        if self.log_dir is None:
+        """
+        Keep path-like fields consistent with experiment_prefix.
+
+        - log_dir: if not explicitly provided (YAML/CLI), derive as logs/<experiment_prefix>
+        - checkpoint_dir: if provided (and not None), treat as a *base* dir and append <experiment_prefix>
+          (if it's already suffixed with experiment_prefix, leave it unchanged)
+        """
+        # log_dir: always follow experiment_prefix unless the user explicitly set a non-null value
+        # (if user sets log_dir: null, still derive it)
+        if self.log_dir is None or "log_dir" not in self.model_fields_set:
             self.log_dir = Path("logs") / self.experiment_prefix
-        
-        # Append experiment_prefix to checkpoint_dir if it's set
+
+        # checkpoint_dir: preserve explicit None (disables checkpointing)
         if self.checkpoint_dir is not None:
-            self.checkpoint_dir = Path(self.checkpoint_dir) / self.experiment_prefix
-        
+            base = Path(self.checkpoint_dir)
+            if base.name != self.experiment_prefix:
+                self.checkpoint_dir = base / self.experiment_prefix
+
         return self
 
 @click.command()
@@ -303,6 +328,19 @@ def parse_args(config_path: Optional[str], network_initial_peers: Optional[str],
 
     base_dict = cfg.model_dump(exclude_unset=True)
     nxt_dict = config.model_dump(exclude_unset=True)
+
+    # pydanclick/click will pass default values for many options; we must not let those
+    # defaults override values coming from the YAML. Use Click's parameter source to
+    # drop known-problematic fields unless explicitly provided on the CLI.
+    ctx = click.get_current_context(silent=True)
+    if ctx is not None:
+        for field_name in ("log_dir", "checkpoint_dir"):
+            try:
+                if ctx.get_parameter_source(field_name) == ParameterSource.DEFAULT:
+                    nxt_dict.pop(field_name, None)
+            except Exception:
+                # Best-effort: if click can't resolve the parameter source, don't crash config parsing.
+                pass
     merged_dict = always_merger.merge(base_dict, nxt_dict)
 
     merged_cfg = cfg.model_validate(merged_dict)
@@ -315,8 +353,9 @@ def parse_args(config_path: Optional[str], network_initial_peers: Optional[str],
                 merged_cfg.network.initial_peers = parsed_json
             else:
                 merged_cfg.network.initial_peers = [p.strip() for p in network_initial_peers.split(",") if p.strip()]
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse network-initial-peers: {e}")
+        except (json.JSONDecodeError, ValueError):
+            # Be forgiving (match start_servers.py): treat as comma-separated list, or a single peer string.
+            merged_cfg.network.initial_peers = [p.strip() for p in network_initial_peers.split(",") if p.strip()]
     
     if merged_cfg.device == "rocm":
         merged_cfg.device = "cuda"

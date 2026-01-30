@@ -1,0 +1,26 @@
+# wrapper_playbook.yaml
+# to be used by the run-tasks helper app
+
+- hosts: "{{ target_hosts }}"
+  gather_facts: true
+  vars:
+      # Pass via --extra-vars "task_files=['tasks1.yaml','tasks2.yaml']"
+      task_files: []
+      # Pass via --extra-vars "target_hosts=your_target"
+      # No default target_hosts to force explicit specification
+      target_hosts: "{{ target_hosts | mandatory }}"
+      aether_run_dir: "{{ ansible_env.HOME }}/aether"
+      aether_deployment_server_cert: "../workdir_server/cert.pem"
+      deployment_git_path: "aether.git"
+      deployment_git_port: "4443"
+      deployment_git_user: "{{ ansible_hostname }}"
+      deployment_git_psk: "{{ lookup('file', '../workdir_server/psk.txt') | mandatory }}"
+      deployment_git_server: "192.168.122.1"
+      deployment_git_url: "https://{{ deployment_git_user }}:{{ deployment_git_psk }}@{{ deployment_git_server }}:{{ deployment_git_port }}/{{ deployment_git_path }}"
+  remote_user: "{{ username | default('aether') }}"
+  tasks:
+      - name: Include each task file
+        ansible.builtin.include_tasks: "{{ task }}"
+        loop: "{{ task_files }}"
+        loop_control:
+            loop_var: task

@@ -1,0 +1,311 @@
+# site.yml
+- name: Unified distqat  setup (monitor first, then workers)
+  hosts: all
+  gather_facts: true
+
+  vars:
+    # -------------------------
+    # Inventory / groups
+    # -------------------------
+    # Set monitor_group_name to match your inventory group (e.g., "monitor")
+    monitor_group_name: "monitor"
+
+    # -------------------------
+    # Initial peers generation (optional)
+    # Set generate_initial_peers=true to generate and distribute initial_peers.txt
+    # Usage: ansible-playbook -i inventory.yaml install_servers_with_peers.yaml -e generate_initial_peers=true
+    # -------------------------
+    generate_initial_peers: true
+    # initial_peers.txt is stored in logs/ directly (config-agnostic)
+    logs_base_dir: "{{ repo_dest }}/logs"
+    initial_peers_filename: "initial_peers.txt"
+    initial_peers_remote_path: "{{ logs_base_dir }}/{{ initial_peers_filename }}"
+    initial_peers_local_tmp: "/tmp/{{ initial_peers_filename }}.from_monitor"
+    # How long to wait for initial_peers.txt to be populated (seconds)
+    initial_peers_wait_timeout: 120
+    initial_peers_wait_delay: 2
+
+    # -------------------------
+    # Repo / install
+    # -------------------------
+    github_pat: "{{ lookup('env', 'GITHUB_PAT') }}"
+    repo_url: "https://{{ github_pat }}@github.com/SEMRON/distqat.git"
+    # ERROR IS HERE:
+    # The warning from Ansible is: 
+    # "Use `ansible_facts["fact_name"]` (no `ansible_` prefix) instead.".
+    # The usage of "{{ ansible_env.HOME }}" is deprecated.
+    # The correct way is "{{ ansible_facts['env']['HOME'] }}" (or, for Ansible >=2.8, "{{ ansible_facts.env.HOME }}")
+    repo_dest: "{{ ansible_facts['env']['HOME'] }}/distqat"
+
+    # -------------------------
+    # uv / python
+    # -------------------------
+    uv_bin: "/snap/bin/uv"
+    python_version: "3.10"
+
+    # -------------------------
+    # Tokens (prefer --extra-vars or Vault)
+    # -------------------------
+    wandb_api_key: "{{ lookup('env', 'WANDB_API_KEY') }}"
+    hf_token: "{{ lookup('env', 'HF_TOKEN') }}"
+
+
+    # -------------------------
+    # Systemd environment injection (visible to services)
+    # -------------------------
+    systemd_env_dir: "/etc/default"
+    systemd_env_file: "{{ systemd_env_dir }}/distqat.env"
+
+    # -------------------------
+    # Python extras per role
+    # -------------------------
+    worker_extras: "gpuspecific"     # workers install: -e .[gpuspecific]
+
+  tasks:
+    # -------------------------
+    # Common: base packages + repo + venv
+    # -------------------------
+    - name: Clean apt cache and force refresh (Ubuntu)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+        apt-get update
+      args:
+        executable: /bin/bash
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+      retries: 3
+      delay: 5
+      register: apt_update_result
+      until: apt_update_result.rc == 0
+      async: 300
+      poll: 10
+
+    - name: Install required packages (Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3
+          - python3-pip
+          - libpython3-dev
+          - libopenmpi-dev
+          - ffmpeg
+        state: present
+        update_cache: no
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+      retries: 3
+      delay: 10
+      register: apt_install_result
+      until: apt_install_result is success
+      async: 600
+      poll: 15
+
+    - name: Install astral-uv with snap (Ubuntu)
+      community.general.snap:
+        name: astral-uv
+        state: present
+        classic: true
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+
+    - name: Clone distqat git repo
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        clone: yes
+        update: yes
+        version: master
+        force: yes
+      become: false
+
+    - name: Create Python venv using uv
+      ansible.builtin.shell: |
+        set -euo pipefail
+        "{{ uv_bin }}" venv --python={{ python_version }}
+      args:
+        chdir: "{{ repo_dest }}"
+        creates: "{{ repo_dest }}/.venv"
+        executable: /bin/bash
+      become: false
+
+    - name: Ensure managed section is present in pyproject.toml (idempotent)
+      ansible.builtin.blockinfile:
+        path: "{{ repo_dest }}/pyproject.toml"
+        block: |
+          [[tool.uv.index]]
+          name = "pytorch_cuda"
+          url = "https://download.pytorch.org/whl/cu128"
+          explicit = true
+
+          [tool.uv.sources]
+          torch = { index = "pytorch_cuda" }
+          torchvision = { index = "pytorch_cuda" }
+          torchaudio = { index = "pytorch_cuda" }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - aether auto setup"
+        insertafter: EOF
+        create: no
+      become: false
+
+    - name: Check if torchcodec is installed
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        python -c "import torchcodec" 2>/dev/null
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      register: torchcodec_check
+      failed_when: false
+      changed_when: false
+      become: false
+
+    - name: Install torchcodec using uv pip
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        "{{ uv_bin }}" pip install torchcodec
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+      when: torchcodec_check.rc != 0
+
+    - name: Open firewall ports for distqat communication
+      ansible.builtin.shell: ufw allow 50000:60000/tcp
+      become: true
+      failed_when: false
+      
+
+    # -------------------------
+    # Role-specific editable install
+    # -------------------------
+    - name: Install project extras for workers
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        "{{ uv_bin }}" pip install -e .[{{ worker_extras }}]
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+
+    # # =========================================================================
+    # # INITIAL PEERS GENERATION (config-agnostic, uses default resnet18 config)
+    # # Usage: ansible-playbook -i inventory.yaml install_servers_with_peers.yaml -e generate_initial_peers=true
+    # # =========================================================================
+
+    # Compute monitor_host unconditionally (like gptneo_small pattern)
+    - name: Compute role membership and monitor host
+      ansible.builtin.set_fact:
+        is_monitor: "{{ inventory_hostname in (groups[monitor_group_name] | default([])) if monitor_group_name | length > 0 else inventory_hostname == ansible_play_hosts | first }}"
+        monitor_host: "{{ (groups[monitor_group_name] | default([])) | first | default(ansible_play_hosts | first) }}"
+
+    - name: Create logs directory on monitor
+      when:
+        - generate_initial_peers | bool
+        - is_monitor | bool
+      ansible.builtin.file:
+        path: "{{ logs_base_dir }}"
+        state: directory
+        mode: "0755"
+      become: false
+
+    - name: Remove existing initial_peers.txt on monitor (if any)
+      when:
+        - generate_initial_peers | bool
+        - is_monitor | bool
+      ansible.builtin.file:
+        path: "{{ initial_peers_remote_path }}"
+        state: absent
+      become: false
+
+    - name: Start run_local.py briefly on monitor to generate initial_peers.txt
+      when:
+        - generate_initial_peers | bool
+        - is_monitor | bool
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        # Run in background using default config (resnet18), redirect output to log file
+        export WANDB_API_KEY={{ wandb_api_key }} && export HF_TOKEN={{ hf_token }} && nohup python run_local.py --num-servers 0 \
+          > "{{ logs_base_dir }}/run_local_init.log" 2>&1 &
+        echo $!
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+      register: run_local_pid
+
+    - name: Wait until initial peers file exists and has content on monitor
+      when:
+        - generate_initial_peers | bool
+        - monitor_host | length > 0
+      ansible.builtin.stat:
+        path: "{{ hostvars[monitor_host]['ansible_facts']['env']['HOME'] }}/distqat/logs/{{ initial_peers_filename }}"
+      register: peers_stat
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      until: >
+        (peers_stat.get('stat', {}).get('exists', false) | bool) and
+        ((peers_stat.get('stat', {}).get('size', 0) | int) > 0)
+      retries: 120
+      delay: 2
+
+    - name: Stop run_local.py process on monitor
+      when:
+        - generate_initial_peers | bool
+        - is_monitor | bool
+      ansible.builtin.shell: |
+        # Kill the run_local process and any child processes (ignore errors)
+        pkill -f "run_local.py" || true
+        # Also kill any monitor/client processes that may have spawned
+        pkill -f "distqat/distributed/monitor.py" || true
+        pkill -f "distqat/distributed/client.py" || true
+        sleep 2
+        exit 0
+      args:
+        executable: /bin/bash
+      become: false
+      failed_when: false
+
+    - name: Fetch initial_peers.txt from monitor to control machine
+      ansible.builtin.fetch:
+        src: "{{ hostvars[monitor_host]['ansible_facts']['env']['HOME'] }}/distqat/logs/{{ initial_peers_filename }}"
+        dest: "{{ initial_peers_local_tmp }}"
+        flat: yes
+        validate_checksum: no
+      when:
+        - generate_initial_peers | bool
+        - monitor_host | length > 0
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      retries: 3
+      delay: 2
+
+    - name: Create logs directory on all hosts
+      ansible.builtin.file:
+        path: "{{ logs_base_dir }}"
+        state: directory
+        mode: "0755"
+      become: false
+      when:
+        - generate_initial_peers | bool
+        - not (is_monitor | bool)
+
+    - name: Copy initial_peers.txt to all non-monitor hosts
+      ansible.builtin.copy:
+        src: "{{ initial_peers_local_tmp }}"
+        dest: "{{ initial_peers_remote_path }}"
+        mode: "0644"
+      when:
+        - generate_initial_peers | bool
+        - not (is_monitor | bool)
+
+    - name: Display initial_peers.txt content
+      ansible.builtin.debug:
+        msg: "Initial peers file created at {{ initial_peers_remote_path }} and distributed to all hosts (config-agnostic location)"
+      when:
+        - generate_initial_peers | bool
+      run_once: true

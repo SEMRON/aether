@@ -1,0 +1,93 @@
+name = "resnet50"
+comment = """
+Example deployment configuration for Prime Intellect GPU cloud.
+"""
+
+[nodes.monitor]
+name = "resnet50-test1-monitor"
+os = "ubuntu-22.04"
+[nodes.monitor.deployment]
+provider = "prime_intellect"
+[nodes.monitor.deployment.config]
+gpu_type = "CPU_NODE"
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Evaluation node (GPU-based, mirrors parameters from workers)
+[nodes.eval_node]
+name = "resnet50-test1-eval"
+os = "ubuntu-22.04"
+[nodes.eval_node.deployment]
+provider = "prime_intellect"
+[nodes.eval_node.deployment.config]
+gpu_type = "A100_80GB"
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Single GPU worker node RTX6000Ada_48GB (RTX A6000)
+[nodes.gpu_node_rtx6000]
+name = "resnet50-test1-gpu-nodes"
+os = "ubuntu-22.04"
+[nodes.gpu_node_rtx6000.array]
+count = 4
+name_template = "resnet50-test1_{array_name}"
+[nodes.gpu_node_rtx6000.deployment]
+provider = "prime_intellect"
+[nodes.gpu_node_rtx6000.deployment.config]
+gpu_type = "RTX6000Ada_48GB"
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Single GPU worker node A6000
+[nodes.gpu_node_a6000]
+name = "resnet50-test2-gpu-nodes"
+os = "ubuntu-22.04"
+[nodes.gpu_node_a6000.array]
+count = 4
+name_template = "resnet50-test2_{array_name}"
+[nodes.gpu_node_a6000.deployment]
+provider = "prime_intellect"
+[nodes.gpu_node_a6000.deployment.config]
+gpu_type = "A6000_48GB"
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Single GPU worker node A100
+[nodes.gpu_node_a100]
+name = "resnet50-test3-gpu-nodes"
+os = "ubuntu-22.04"
+[nodes.gpu_node_a100.array]
+count = 4
+name_template = "resnet50-test3_{array_name}"
+[nodes.gpu_node_a100.deployment]
+provider = "prime_intellect"
+[nodes.gpu_node_a100.deployment.config]
+gpu_type = "A100_80GB"
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Single GPU worker node L40S
+[nodes.gpu_node_l40s]
+name = "resnet50-test4-gpu-nodes"
+os = "ubuntu-22.04"
+[nodes.gpu_node_l40s.array]
+count = 4
+name_template = "resnet50-test4_{array_name}"
+[nodes.gpu_node_l40s.deployment]
+provider = "prime_intellect"
+[nodes.gpu_node_l40s.deployment.config]
+gpu_type = "L40S_48GB"
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]

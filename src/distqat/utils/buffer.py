@@ -2,6 +2,10 @@ import torch
 import numpy as np
 from typing import Tuple, Callable
 import torch.nn as nn
+from hivemind.utils.logging import get_logger
+
+logger = get_logger(__name__)
+# logger.setLevel("DEBUG")
 
 class RolloutBuffer:
     """
@@ -57,7 +61,7 @@ class RolloutBuffer:
         """
         if self.step_idx >= self.num_steps:
             raise IndexError("RolloutBuffer is full; call reset() before collecting again.")
-
+        logger.debug(f"Collecting step {self.step_idx} of {self.num_steps}")
         step = self.step_idx
         global_step += self.num_envs
 
@@ -67,7 +71,10 @@ class RolloutBuffer:
 
         # Action/value under current policy
         with torch.no_grad():
-            action, logprob, _, value = agent.get_action_and_value(next_obs)
+            # workaround to satisfy remote experts forward schema which expects a tuple of (obs, action)
+            no_action = torch.zeros((next_obs.shape[0], self.action_dim), device=self.device)
+            action, logprob, _, value = agent((next_obs, no_action))
+            logger.debug(f"Action: {action.shape}, Logprob: {logprob.shape}, Value: {value.shape}")
             self.values[step] = value.flatten()
         self.actions[step] = action
         self.logprobs[step] = logprob

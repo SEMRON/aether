@@ -77,17 +77,10 @@ def main():
             input_ids = batch["inputs"].to(args.device, non_blocking=True)
             labels = batch["labels"].to(args.device, non_blocking=True)
 
-            logits = model(input_ids)  # [B, T, vocab]
+            loss = model(input_ids, labels)  # [B, T, vocab]
+            loss = loss.mean()
 
-            # Next-token prediction (matches Trainer.task_type_loss for "llm")
-            shift_logits = logits[:, :-1, :].contiguous()
-            shift_labels = labels[:, 1:].contiguous()
-            loss = F.cross_entropy(
-                shift_logits.float().permute(0, 2, 1),
-                shift_labels,
-                reduction="mean",
-            )
-
+            # Next-token prediction (matches Trainer.task_type_loss for "ll
             (loss / grad_accumulation_steps).backward()
 
             if micro_step % grad_accumulation_steps == 0:

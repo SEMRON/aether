@@ -10,7 +10,8 @@ import signal
 from pathlib import Path
 
 import torch
-torch.multiprocessing.set_sharing_strategy('file_descriptor')
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
 
 from hivemind.utils.logging import get_logger, use_hivemind_log_handler
 from hivemind.dht import DHT
@@ -36,14 +37,13 @@ class SwarmClient:
         config: Config, 
         public_ip: Optional[str] = None,
         refresh_period: int = 300,
-        disable_quant: bool = False,
     ):
         self.config = config
         self.refresh_period = refresh_period
         self.trainer_procs: Dict[int, subprocess.Popen] = {}
         self.log_dir = config.log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.disable_quant = disable_quant
+        self.disable_quant = config.disable_quant
         self.wandb_enabled = config.wandb_project is not None
         
         self.dht = DHT(
@@ -59,13 +59,18 @@ class SwarmClient:
         self.dht.add_validators([SchemaValidator(TrainingProgressSchema, prefix=config.experiment_prefix), signature_validator])
 
         if self.wandb_enabled:
-            dht_run_id = logging.get_wandb_run_id(self.dht, config.experiment_prefix)
-            if dht_run_id:
-                config.wandb_run_id = dht_run_id
-                logger.info(f"CLIENT:Retrieved wandb_run_id from DHT: {dht_run_id}")
+            # Prefer CLI-provided wandb_run_id, otherwise try to retrieve from DHT with retries
+            if config.wandb_run_id:
+                logger.info(f"CLIENT: Using CLI-provided wandb_run_id: {config.wandb_run_id}")
             else:
-                logger.warning("CLIENT:wandb_run_id not found in DHT and not provided in config. Wandb may create separate runs.")
-        
+                dht_run_id = logging.get_wandb_run_id_with_retries(
+                    self.dht, config.experiment_prefix, max_retries=15, retry_delay=2.0
+                )
+                if dht_run_id:
+                    config.wandb_run_id = dht_run_id
+                    logger.info(f"CLIENT: Retrieved wandb_run_id from DHT: {dht_run_id}")
+                else:
+                    logger.warning("CLIENT: wandb_run_id not found in DHT after retries and not provided via CLI. Wandb may create separate runs.")
 
         if self.wandb_enabled:
             try:
@@ -177,9 +182,6 @@ class SwarmClient:
         if inner_steps is not None:
             cmd.extend(["--diloco-inner-steps", str(inner_steps)])
 
-        if self.disable_quant:
-            cmd.append("--disable-quant")
-        
         log_path = self.log_dir / f"trainer_{trainer_id}.log"
         log_file = open(log_path, "w")
         
@@ -342,12 +344,11 @@ class SwarmClient:
             except Exception as e:
                 logger.warning(f"Failed to finish wandb for client: {e}")
 
-def run_client(cfg: Config, refresh_period: int, public_ip: Optional[str] = None, disable_quant: bool = False):
+def run_client(cfg: Config, refresh_period: int, public_ip: Optional[str] = None):
     client = SwarmClient(
         cfg,
         refresh_period=refresh_period,
         public_ip=public_ip,
-        disable_quant=disable_quant,
     )
     
     logger.info(f"Experiment prefix: {cfg.experiment_prefix}")
@@ -363,7 +364,6 @@ def run_client(cfg: Config, refresh_period: int, public_ip: Optional[str] = None
 
 if __name__ == "__main__":
     parse_args_with_extra_kwargs = click.option("--refresh-period", type=int, default=5)(parse_args)
-    parse_args_with_extra_kwargs = click.option("--disable-quant", is_flag=True)(parse_args_with_extra_kwargs)
     parse_args_with_extra_kwargs = click.option("--public-ip", type=str, default=None)(parse_args_with_extra_kwargs)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*is used more than once. Remove its duplicate as parameters should be unique.*")

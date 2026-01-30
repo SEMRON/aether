@@ -3,9 +3,11 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 import ipaddress
+from pathlib import Path
 
 import torch
-torch.multiprocessing.set_sharing_strategy('file_descriptor')
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
 
 from pydantic._internal._generate_schema import UnsupportedFieldAttributeWarning
 warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
@@ -33,6 +35,7 @@ import string
 
 logger = get_logger(__name__)
 use_hivemind_log_handler("in_root_logger")
+logger.setLevel('DEBUG')
 
 
 @dataclass
@@ -156,7 +159,7 @@ class LogEntry:
         # else:
         #     lines.append("    (no pipeline data)")
 
-        # return "\n".join(lines)
+        return "\n".join(lines)
 
     def to_wandb_payload(self):
         unique_peers = {
@@ -250,6 +253,10 @@ class Monitor:
         # Initialize wandb only if wandb_project is set
         self.wandb_enabled = config.wandb_project is not None
         self._wandb_defined_trainers: Set[int] = set()
+        self._wandb_run_id: Optional[str] = None
+        # Refresh wandb_run_id in DHT every 30 minutes (expiration is 1 hour, so refresh at half-life)
+        self._wandb_run_id_refresh_interval = 1800  # 30 minutes in seconds
+        self._last_wandb_run_id_refresh = 0.0
         if self.wandb_enabled:
             wandb_run_id = config.wandb_run_id
             if wandb_run_id is None:
@@ -263,6 +270,8 @@ class Monitor:
             else:
                 store_wandb_run_id(self.dht, config.experiment_prefix, wandb_run_id, expiration=3600)
                 logger.info(f"Stored wandb_run_id in DHT: {wandb_run_id}")
+            self._wandb_run_id = wandb_run_id
+            self._last_wandb_run_id_refresh = time.time()
             
             try:
                 wandb.init(
@@ -284,6 +293,14 @@ class Monitor:
                 wandb.define_metric("loss/distributed", step_metric="distributed/step")
                 # Aligned plots: baseline vs distributed on the same x-axis (train step).
                 wandb.define_metric("loss_aligned/*", step_metric="train/step")
+                # PPO env metrics: align episodic return/length plots on env-step.
+                wandb.define_metric("charts/episodic_return", step_metric="charts/env_step")
+                wandb.define_metric("charts/episodic_length", step_metric="charts/env_step")
+                wandb.define_metric("episodic_return/*", step_metric="charts/env_step")
+                wandb.define_metric("episodic_length/*", step_metric="charts/env_step")
+                # Eval metrics from the evaluator (published to DHT, collected by monitor)
+                wandb.define_metric("eval/*", step_metric="eval/step")
+                logger.info(f"Wandb initialized successfully. Run URL: {wandb.run.url if wandb.run else 'N/A'}")
             except Exception as e:
                 logger.warning(f"Failed to initialize wandb: {e}. Continuing without wandb logging.")
                 self.wandb_enabled = False
@@ -291,6 +308,31 @@ class Monitor:
             logger.info("Wandb project not set, skipping wandb initialization")
     
         self.store_ip_addresses_path = store_ip_addresses_path
+        
+        # Compute wandb_run_id file path from store_ip_addresses_path (same directory)
+        if store_ip_addresses_path:
+            ip_path = Path(store_ip_addresses_path)
+            self.wandb_run_id_path = ip_path.parent / "wandb_run_id.txt"
+        else:
+            self.wandb_run_id_path = None
+
+    def _refresh_wandb_run_id_if_needed(self) -> None:
+        """Refresh the wandb_run_id in DHT if the refresh interval has passed.
+        
+        This ensures the DHT entry doesn't expire during long-running experiments,
+        allowing restarted services to find the existing wandb run.
+        """
+        if not self._wandb_run_id:
+            return
+        
+        now = time.time()
+        if now - self._last_wandb_run_id_refresh >= self._wandb_run_id_refresh_interval:
+            try:
+                store_wandb_run_id(self.dht, self.config.experiment_prefix, self._wandb_run_id, expiration=3600)
+                self._last_wandb_run_id_refresh = now
+                logger.debug(f"Refreshed wandb_run_id in DHT: {self._wandb_run_id}")
+            except Exception as e:
+                logger.warning(f"Failed to refresh wandb_run_id in DHT: {e}")
 
     @staticmethod
     async def _list_peer_multiaddrs(_dht, node) -> Dict[str, List[str]]:
@@ -569,7 +611,9 @@ class Monitor:
                     wandb.define_metric(f"loss/trainer_{trainer_id}", step_metric=f"trainer_{trainer_id}/step")
                     self._wandb_defined_trainers.add(trainer_id)
                 # Base monitor payload (uses W&B's internal/global step, monotonically increasing by call order).
-                wandb.log(entry.to_wandb_payload())
+                payload = entry.to_wandb_payload()
+                logger.debug(f"Logging to wandb: {list(payload.keys())}")
+                wandb.log(payload)
 
                 # Aligned losses (same x-axis: train/step). Logged as separate rows so each can carry its own step.
                 if entry.baseline_step is not None and entry.baseline_loss is not None:
@@ -603,14 +647,24 @@ class Monitor:
         last_logged_trainer_steps: Dict[int, int] = {}
         waiting_for_metrics_logged = False
         while True:
+            # Refresh wandb_run_id in DHT to prevent expiration during long runs
+            self._refresh_wandb_run_id_if_needed()
+            
             metrics_response = None
             rl_metrics_response = None
             try:
                 if self.store_ip_addresses_path is not None:
                     with open(self.store_ip_addresses_path, "w") as f:
                         f.write(",".join(str(a) for a in self.dht.get_visible_maddrs(latest=True)))
+                # Write wandb_run_id to file for other nodes to read (avoids DHT race condition)
+                if self.wandb_run_id_path is not None and self._wandb_run_id:
+                    with open(self.wandb_run_id_path, "w") as f:
+                        f.write(self._wandb_run_id)
                 metrics_response = dht.get(experiment_prefix + "_metrics", latest=True)
                 rl_metrics_response = dht.get(experiment_prefix + "_rl_metrics", latest=True)
+                eval_metrics_response = dht.get(experiment_prefix + "_eval_metrics", latest=True)
+                baseline_eval_metrics_response = dht.get(experiment_prefix + "_baseline_eval_metrics", latest=True)
+                logger.debug(f"DHT metrics_response: {metrics_response is not None}, rl_metrics_response: {rl_metrics_response is not None}, eval_metrics_response: {eval_metrics_response is not None}, baseline_eval_metrics_response: {baseline_eval_metrics_response is not None}")
                 if metrics_response is None:
                     if not waiting_for_metrics_logged:
                         logger.info(waiting_message)
@@ -685,6 +739,7 @@ class Monitor:
                             should_log = True
 
                         if not should_log:
+                            logger.debug("Skipping log entry - no step change detected")
                             time.sleep(self.refresh_period)
                             continue
 
@@ -738,23 +793,107 @@ class Monitor:
                                 except ValidationError as e:
                                     logger.debug(f"Skipping invalid rl metrics entry: {e}")
                             if rl_metrics:
-                                latest_env_step = max(item.step for item in rl_metrics)
-                                rl_at_step = [item for item in rl_metrics if item.step == latest_env_step]
-                                rl_scalar_values: Dict[str, List[float]] = defaultdict(list)
-                                for item in rl_at_step:
+                                # Keep per-trainer env metrics separate (like losses), and compute a
+                                # distributed mean across trainers for convenience.
+                                rl_scalar_values_by_source: Dict[int, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+                                env_steps_by_source: Dict[int, int] = {}
+                                for item in rl_metrics:
                                     scalars = getattr(item, "scalars", None) or {}
                                     if not isinstance(scalars, dict):
                                         continue
+                                    env_steps_by_source[int(item.trainer_id)] = int(item.step)
                                     for k, v in scalars.items():
                                         try:
-                                            rl_scalar_values[str(k)].append(float(v))
+                                            rl_scalar_values_by_source[int(item.trainer_id)][str(k)].append(float(v))
                                         except Exception:
                                             continue
                                 # Always expose the env-step clock when env-metrics exist (PPO only today).
-                                scalar_means["charts/env_step"] = float(latest_env_step)
-                                for k, values in rl_scalar_values.items():
-                                    if values:
-                                        scalar_means[k] = sum(values) / len(values)
+                                if env_steps_by_source:
+                                    scalar_means["charts/env_step"] = float(max(env_steps_by_source.values()))
+
+                                # Helper to extract a mean for a key from a source bucket
+                                def _mean_for(source_id: int, key: str) -> Optional[float]:
+                                    values = (rl_scalar_values_by_source.get(source_id) or {}).get(key) or []
+                                    if not values:
+                                        return None
+                                    return float(sum(values) / len(values))
+
+                                # Per-trainer episodic metrics
+                                trainer_return_means: List[float] = []
+                                trainer_length_means: List[float] = []
+                                for source_id in sorted(rl_scalar_values_by_source.keys()):
+                                    if source_id < 0:
+                                        continue
+                                    r = _mean_for(source_id, "charts/episodic_return")
+                                    l = _mean_for(source_id, "charts/episodic_length")
+                                    if r is not None:
+                                        scalar_means[f"episodic_return/trainer_{source_id}"] = r
+                                        trainer_return_means.append(r)
+                                    if l is not None:
+                                        scalar_means[f"episodic_length/trainer_{source_id}"] = l
+                                        trainer_length_means.append(l)
+                                    # Also expose per-trainer env step so we can log accurate W&B points.
+                                    if source_id in env_steps_by_source:
+                                        scalar_means[f"env_step/trainer_{source_id}"] = float(env_steps_by_source[source_id])
+
+                                # Baseline/data-server episodic metrics (if present)
+                                baseline_r = _mean_for(-1, "charts/episodic_return")
+                                baseline_l = _mean_for(-1, "charts/episodic_length")
+                                if baseline_r is not None:
+                                    scalar_means["episodic_return/baseline"] = baseline_r
+                                if baseline_l is not None:
+                                    scalar_means["episodic_length/baseline"] = baseline_l
+                                if -1 in env_steps_by_source:
+                                    scalar_means["env_step/baseline"] = float(env_steps_by_source[-1])
+
+                                # Distributed mean across trainers (and keep legacy charts/* keys as the mean).
+                                if trainer_return_means:
+                                    dist_r = float(sum(trainer_return_means) / len(trainer_return_means))
+                                    scalar_means["episodic_return/distributed"] = dist_r
+                                    scalar_means["charts/episodic_return"] = dist_r
+                                    non_baseline_env_steps = [step for source_id, step in env_steps_by_source.items() if source_id != -1]
+                                    scalar_means["env_step/distributed"] = max(non_baseline_env_steps)
+
+                                if trainer_length_means:
+                                    dist_l = float(sum(trainer_length_means) / len(trainer_length_means))
+                                    scalar_means["episodic_length/distributed"] = dist_l
+                                    scalar_means["charts/episodic_length"] = dist_l
+
+                        # Process eval metrics from the evaluator (published to DHT)
+                        if eval_metrics_response is not None and eval_metrics_response.value is not None:
+                            eval_dict = eval_metrics_response.value
+                            for entry in eval_dict.values():
+                                if entry.value is None:
+                                    continue
+                                try:
+                                    # Eval metrics are stored as plain dicts with eval/* keys
+                                    eval_data = entry.value
+                                    if isinstance(eval_data, dict):
+                                        for k, v in eval_data.items():
+                                            try:
+                                                scalar_means[str(k)] = float(v)
+                                            except (ValueError, TypeError):
+                                                pass
+                                except Exception as e:
+                                    logger.debug(f"Skipping invalid eval metrics entry: {e}")
+
+                        # Process baseline eval metrics from the baseline evaluator (published to DHT)
+                        if baseline_eval_metrics_response is not None and baseline_eval_metrics_response.value is not None:
+                            baseline_eval_dict = baseline_eval_metrics_response.value
+                            for entry in baseline_eval_dict.values():
+                                if entry.value is None:
+                                    continue
+                                try:
+                                    # Baseline eval metrics are stored as plain dicts with baseline_eval/* keys
+                                    baseline_eval_data = entry.value
+                                    if isinstance(baseline_eval_data, dict):
+                                        for k, v in baseline_eval_data.items():
+                                            try:
+                                                scalar_means[str(k)] = float(v)
+                                            except (ValueError, TypeError):
+                                                pass
+                                except Exception as e:
+                                    logger.debug(f"Skipping invalid baseline eval metrics entry: {e}")
 
                         try:
                             pipeline_infos = self._collect_progress_info()

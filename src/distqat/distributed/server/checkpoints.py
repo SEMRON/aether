@@ -72,6 +72,7 @@ class CheckpointSaver(threading.Thread):
         keep_history: bool = True,
     ):
         super().__init__()
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
         assert is_directory(checkpoint_dir)
         self.expert_backends = expert_backends
         self.update_period = update_period

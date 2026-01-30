@@ -10,6 +10,8 @@ from time import time
 from typing import Dict, NamedTuple, Optional
 
 import torch
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
 from prefetch_generator import BackgroundGenerator
 
 from hivemind.utils import get_logger

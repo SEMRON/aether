@@ -1,0 +1,331 @@
+# site.yml
+- name: Unified distqat + gptneo setup (monitor first, then workers)
+  hosts: all
+  gather_facts: true
+
+  vars:
+    # -------------------------
+    # Inventory / groups
+    # -------------------------
+    monitor_group_name: "monitor"
+    worker_group_name: "gpu_node"
+
+    # -------------------------
+    # Repo / install
+    # -------------------------
+    github_pat: "{{ lookup('env', 'GITHUB_PAT') }}"
+    repo_url: "https://{{ github_pat }}@github.com/SEMRON/distqat.git"
+    # ERROR IS HERE:
+    # The warning from Ansible is: 
+    # "Use `ansible_facts["fact_name"]` (no `ansible_` prefix) instead.".
+    # The usage of "{{ ansible_env.HOME }}" is deprecated.
+    # The correct way is "{{ ansible_facts['env']['HOME'] }}" (or, for Ansible >=2.8, "{{ ansible_facts.env.HOME }}")
+    repo_dest: "{{ ansible_facts['env']['HOME'] }}/distqat"
+
+    # -------------------------
+    # uv / python
+    # -------------------------
+    uv_bin: "/snap/bin/uv"
+    python_version: "3.10"
+
+    # -------------------------
+    # Tokens (prefer --extra-vars or Vault)
+    # -------------------------
+    wandb_api_key: "{{ lookup('env', 'WANDB_API_KEY') }}"
+    hf_token: "{{ lookup('env', 'HF_TOKEN') }}"
+
+    # -------------------------
+    # Model / network selection (parameterized)
+    # -------------------------
+    gptneo_network_type: "gptneo_split"
+    gptneo_config_path: "configs/{{ gptneo_network_type }}.yaml"
+
+    # -------------------------
+    # Paths / files
+    # -------------------------
+    gptneo_logs_dir: "{{ repo_dest }}/logs/gptneo" # important, has to match config file
+    initial_peers_filename: "initial_peers.txt"
+
+    # -------------------------
+     # Services
+    # -------------------------
+    trainer_client_service_name: "gptneo-trainer-client"
+    trainer_client_exec: "{{ repo_dest }}/.venv/bin/python start_trainer_client.py --config-path {{ gptneo_config_path }}"
+
+    # -------------------------
+    # Systemd environment injection (visible to services)
+    # -------------------------
+    systemd_env_dir: "/etc/default"
+    systemd_env_file: "{{ systemd_env_dir }}/distqat.env"
+
+    # -------------------------
+    # Python extras per role
+    # -------------------------
+    worker_extras: "gpuspecific"     # workers install: -e .[gpuspecific]
+
+  tasks:
+    - name: Compute role membership and monitor host
+      ansible.builtin.set_fact:
+        is_monitor: "{{ inventory_hostname in (groups[monitor_group_name] | default([])) }}"
+        is_worker: "{{ inventory_hostname in (groups[worker_group_name] | default([])) }}"
+        monitor_host: "{{ (groups[monitor_group_name] | default([])) | first }}"
+        initial_peers_remote_path: "{{ gptneo_logs_dir }}/{{ initial_peers_filename }}"
+        initial_peers_local_tmp: "/tmp/pahrendt_{{ initial_peers_filename }}.from_monitor"
+
+    # -------------------------
+    # Common: base packages + repo + venv
+    # -------------------------
+    - name: Install required packages (Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3
+          - python3-pip
+          - libpython3-dev
+          - libopenmpi-dev
+          - ffmpeg
+        state: present
+        update_cache: yes
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+
+    - name: Install astral-uv with snap (Ubuntu)
+      community.general.snap:
+        name: astral-uv
+        state: present
+        classic: true
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+
+    - name: Clone distqat git repo
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        clone: yes
+        update: yes
+        version: master
+        force: yes
+      become: false
+
+    - name: Create Python venv using uv
+      ansible.builtin.shell: |
+        set -euo pipefail
+        "{{ uv_bin }}" venv --python={{ python_version }}
+      args:
+        chdir: "{{ repo_dest }}"
+        creates: "{{ repo_dest }}/.venv"
+        executable: /bin/bash
+      become: false
+
+    - name: Ensure managed section is present in pyproject.toml (idempotent)
+      ansible.builtin.blockinfile:
+        path: "{{ repo_dest }}/pyproject.toml"
+        block: |
+          {% if is_worker %}
+          [[tool.uv.index]]
+          name = "pytorch_cuda"
+          url = "https://download.pytorch.org/whl/cu128"
+          explicit = true
+
+          [tool.uv.sources]
+          torch = { index = "pytorch_cuda" }
+          torchvision = { index = "pytorch_cuda" }
+          torchaudio = { index = "pytorch_cuda" }
+          {% else %}
+          [[tool.uv.index]]
+          name = "pytorch_cpu"
+          url = "https://download.pytorch.org/whl/cpu"
+          explicit = true
+
+          [tool.uv.sources]
+          torch = { index = "pytorch_cpu" }
+          torchvision = { index = "pytorch_cpu" }
+          torchaudio = { index = "pytorch_cpu" }
+          {% endif %}
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - aether auto setup"
+        insertafter: EOF
+        create: no
+      become: false
+
+    - name: Check if torchcodec is installed
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        python -c "import torchcodec" 2>/dev/null
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      register: torchcodec_check
+      failed_when: false
+      changed_when: false
+      become: false
+
+    - name: Install torchcodec using uv pip
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        "{{ uv_bin }}" pip install torchcodec
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+      when: torchcodec_check.rc != 0
+
+    # -------------------------
+    # Role-specific editable install
+    # -------------------------
+    - name: Install project extras for workers
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        "{{ uv_bin }}" pip install -e .[{{ worker_extras }}]
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+
+    # -------------------------
+    # Make tokens available to systemd services (no bashrc dependency)
+    # -------------------------
+    - name: Ensure systemd env dir exists
+      ansible.builtin.file:
+        path: "{{ systemd_env_dir }}"
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Write environment file for services
+      ansible.builtin.copy:
+        dest: "{{ systemd_env_file }}"
+        owner: root
+        group: root
+        mode: "0640"
+        content: |
+          # Managed by Ansible
+          {% if wandb_api_key | default('') | length > 0 -%}
+          WANDB_API_KEY={{ wandb_api_key }}
+          {% endif -%}
+          {% if hf_token | default('') | length > 0 -%}
+          HF_TOKEN={{ hf_token }}
+          {% endif -%}
+      become: true
+
+    # -------------------------
+    # Monitor: start service first
+    # -------------------------
+    - name: Create trainer client systemd service (monitor only)
+      when: is_monitor
+      block:
+        - name: Write systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ trainer_client_service_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Trainer Client Service ({{ gptneo_network_type }})
+              After=network.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory={{ repo_dest }}
+              ExecStart={{ trainer_client_exec }}
+              Restart=always
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+
+              [Install]
+              WantedBy=multi-user.target
+          become: true
+
+        - name: Reload systemd
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+        - name: Enable and start service
+          ansible.builtin.systemd:
+            name: "{{ trainer_client_service_name }}.service"
+            enabled: yes
+            state: started
+          become: true
+
+    # -------------------------
+    # After monitor is up: fetch peers -> copy to workers -> then workers setup
+    # -------------------------
+    - name: Wait until initial peers file exists on monitor
+      ansible.builtin.stat:
+        path: "{{ initial_peers_remote_path }}"
+      register: peers_stat
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      until: peers_stat.stat.exists
+      retries: 30
+      delay: 2
+
+    - name: Fetch initial peers file from monitor to control machine
+      ansible.builtin.fetch:
+        src: "{{ initial_peers_remote_path }}"
+        dest: "{{ initial_peers_local_tmp }}"
+        flat: yes
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+
+    - name: Ensure gptneo logs dir exists (workers)
+      ansible.builtin.file:
+        path: "{{ gptneo_logs_dir }}"
+        state: directory
+        mode: "0755"
+      when: is_worker
+
+    - name: Copy initial peers file to workers
+      ansible.builtin.copy:
+        src: "{{ initial_peers_local_tmp }}"
+        dest: "{{ initial_peers_remote_path }}"
+        mode: "0644"
+      when: is_worker
+
+    - name: Create worker server systemd service
+      when: is_worker
+      block:
+        - name: Extract expert index from hostname
+          ansible.builtin.set_fact:
+            worker_expert_index: "{{ inventory_hostname.split('_')[-1] }}"
+
+        - name: Write worker systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/gptneo-worker-server.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=gptneo Worker Server
+              After=network.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory={{ repo_dest }}
+              ExecStart={{ repo_dest }}/.venv/bin/python start_servers.py --config-path configs/gptneo_split.yaml --initial-peers-path {{ initial_peers_remote_path }} --num-servers 1 --expert-index 0 --stage-index {{ worker_expert_index }}
+              Restart=always
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+
+              [Install]
+              WantedBy=multi-user.target
+          become: true
+
+        - name: Reload systemd (worker)
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+        - name: Enable and start worker service
+          ansible.builtin.systemd:
+            name: "gptneo-worker-server.service"
+            enabled: yes
+            state: started
+          become: true

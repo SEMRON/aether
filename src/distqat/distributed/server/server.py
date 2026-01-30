@@ -138,6 +138,8 @@ class SwarmServer(threading.Thread):
         dht: Optional[DHT] = None,
         cfg: Config = None,
         stage_index: int = 0,
+        skip_load_from_peers: bool = False,
+        skip_load_checkpoints: bool = False,
         *,
         start: bool,
         **kwargs,
@@ -255,7 +257,11 @@ class SwarmServer(threading.Thread):
                 optim = optim_cls(params=expert.parameters(), avg_only_params=avg_only_params, expert=expert, **optim_kwargs, dht=dht)
             else:
                 optim = optim_cls(params=expert.parameters(), avg_only_params=avg_only_params, **optim_kwargs, dht=dht)
-            optim.load_state_from_peers()
+            
+            if skip_load_from_peers:
+                logger.info(f"Skipping load_state_from_peers for expert {expert_uid} (skip_load_from_peers=True)")
+            else:
+                optim.load_state_from_peers()
             
             outputs_schema = None
             if pipeline_step_cfg.outputs_schema_instance_dims is not None:
@@ -278,9 +284,12 @@ class SwarmServer(threading.Thread):
                 clip_grad_norm=clip_grad_norm,
                 min_batch_size=min_batch_size,
                 max_batch_size=max_batch_size,
+                compression=compression,
             )
-        if checkpoint_dir is not None:
+        if checkpoint_dir is not None and not skip_load_checkpoints:
             load_experts(experts, checkpoint_dir)
+        elif skip_load_checkpoints:
+            logger.info(f"Skipping checkpoint loading (skip_load_checkpoints=True)")
 
         return cls(
             dht,

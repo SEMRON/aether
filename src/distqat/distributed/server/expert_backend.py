@@ -4,12 +4,15 @@ import warnings
 import threading
 
 import torch
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
 from torch import nn
 
 from hivemind.moe.server.task_pool import TaskPool
 from hivemind.utils.logging import get_logger
 from hivemind.utils.nested import nested_compare, nested_flatten, nested_map, nested_pack
 from hivemind.utils.tensor_descr import DUMMY_BATCH_SIZE, BatchTensorDescriptor
+from hivemind.proto.runtime_pb2 import CompressionType
 
 logger = get_logger(__name__)
 # logger.setLevel("DEBUG")
@@ -54,6 +57,7 @@ class ExpertBackend:
         outputs_schema: Union[BatchTensorDescriptor, Tuple[BatchTensorDescriptor, ...]] = None,
         clip_grad_norm: float = None,
         target_batch_size: int = None,
+        compression: int = CompressionType.NONE,
         **kwargs,
     ):
         super().__init__()
@@ -64,9 +68,10 @@ class ExpertBackend:
         # New: autocast_dtype can be torch.float16 or torch.bfloat16 to get true bf16 on CUDA.
         self.fp16 = fp16
         self.autocast_dtype = autocast_dtype
+        self.compression = compression
 
         self.clip_grad_norm = clip_grad_norm
-
+        
         self.args_schema = args_schema = tuple(args_schema or ())
         self.kwargs_schema = kwargs_schema = dict(kwargs_schema or {})
         assert args_schema or kwargs_schema, (
@@ -84,7 +89,7 @@ class ExpertBackend:
             autocast_ctx = torch.amp.autocast(device_type=self.device.type, **autocast_kwargs) if self.fp16 else nullcontext()
             with torch.no_grad(), autocast_ctx:
                 dummy_outputs = self.expert(*dummy_args, **dummy_kwargs)
-            outputs_schema = nested_map(BatchTensorDescriptor.from_tensor, dummy_outputs)
+            outputs_schema = nested_map(lambda t: BatchTensorDescriptor.from_tensor(t, self.compression), dummy_outputs)
 
         self.forward_schema = (self.args_schema, self.kwargs_schema)  # inputs for forward
         self.outputs_schema = outputs_schema  # outputs from forward
@@ -93,6 +98,7 @@ class ExpertBackend:
         self.grad_inputs_schema = self.forward_schema  # outputs from backward
         self.forward_pool = TaskPool(self.forward, name=f"{self.name}_forward", **kwargs)
         self.backward_pool = TaskPool(self.backward, name=f"{self.name}_backward", **kwargs)
+        self.forward_averaged_pool = TaskPool(self.forward_averaged, name=f"{self.name}_forward_averaged", **kwargs)
 
         self.update_count = 0
         self.examples_processed = 0
@@ -120,6 +126,44 @@ class ExpertBackend:
             outputs = self.expert(*args, **kwargs)
 
         # Note: TaskPool requires function to accept and return a flat tuple of values, we pack/unpack it on client side
+        return tuple(nested_flatten(outputs))
+
+    def forward_averaged(self, *inputs: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        """
+        Apply forward pass using globally averaged model weights (from last DiLoCo outer step).
+        
+        This is useful for distributed RL where rollouts should be collected under a consistent
+        policy across all workers, while training uses local divergent weights.
+        
+        If averaged weights are not available (e.g., before first outer step or optimizer doesn't
+        support it), falls back to regular forward with local weights.
+        """
+        args, kwargs = nested_pack(inputs, structure=self.forward_schema)
+
+        if args[0].shape[0] == 0:
+            raise RuntimeError("Batch should contain more than 0 samples")
+
+        autocast_kwargs = {"dtype": self.autocast_dtype} if self.autocast_dtype is not None else {}
+        autocast_ctx = torch.amp.autocast(device_type=self.device.type, **autocast_kwargs) if self.fp16 else nullcontext()
+        
+        # Check if optimizer supports averaged weights inference
+        use_averaged_ctx = nullcontext()
+        if hasattr(self.optimizer, 'use_averaged_weights_for_inference'):
+            # Check if averaged weights are available
+            if hasattr(self.optimizer, 'get_averaged_model_weights'):
+                if self.optimizer.get_averaged_model_weights() is not None:
+                    use_averaged_ctx = self.optimizer.use_averaged_weights_for_inference()
+                    logger.debug(f"[ExpertBackend] Using averaged weights for forward_averaged")
+                else:
+                    logger.debug(f"[ExpertBackend] No averaged weights yet, using local weights for forward_averaged")
+            else:
+                use_averaged_ctx = self.optimizer.use_averaged_weights_for_inference()
+        else:
+            logger.debug(f"[ExpertBackend] Optimizer does not support averaged weights, using local weights")
+
+        with torch.no_grad(), autocast_ctx, use_averaged_ctx:
+            outputs = self.expert(*args, **kwargs)
+
         return tuple(nested_flatten(outputs))
 
     def backward(self, *inputs: torch.Tensor) -> Tuple[torch.Tensor, ...]:
@@ -182,6 +226,10 @@ class ExpertBackend:
     def apply_gradients(self, batch_size) -> None:
         """
         Train the expert for one step. This method is called by ``ExpertBackend.backward`` after computing gradients.
+        
+        Note: We do NOT call optimizer.zero_grad() here. For optimizers that support gradient accumulation
+        (like DiLoCoOptimizer), calling zero_grad() after every backward would prevent proper accumulation.
+        The optimizer is responsible for zeroing gradients internally when it actually steps (e.g., in step_inner()).
         """
         self.examples_processed += batch_size
 
@@ -192,7 +240,8 @@ class ExpertBackend:
         self.optimizer.step(batch_size)
         logger.debug(f"EXPERT BACKEND: Optimizer Step Finished for batch size {batch_size}")
 
-        self.optimizer.zero_grad()
+        # Note: zero_grad is handled by the optimizer internally (e.g., DiLoCoOptimizer.step_inner())
+        # to properly support gradient accumulation. Do not call it here.
 
         self.update_count += 1
 
@@ -217,6 +266,7 @@ class ExpertBackend:
     def load_full_state(self, state_dict: Dict):
         # Handle both distributed format ({"model": ..., "optimizer": ..., "stats": ...}) 
         # and baseline format (raw state_dict)
+        optimizer_state = None
         if "model" in state_dict:
             # Distributed format
             model_state = state_dict["model"]
@@ -227,7 +277,7 @@ class ExpertBackend:
                 logger.warning(f"Batch processing stats missing for expert {self.name}")
 
             if "optimizer" in state_dict:
-                self.optimizer.load_state_dict(state_dict["optimizer"])
+                optimizer_state = state_dict["optimizer"]
             else:
                 logger.warning(f"Optimizer state missing for expert {self.name}")
         else:
@@ -246,6 +296,19 @@ class ExpertBackend:
         
         self.expert.load_state_dict(model_state, strict=False)
 
+        # Optimizer state is best-effort: it may not match if the checkpoint was produced with a different
+        # model partitioning / quantization / optimizer param-grouping.
+        if optimizer_state is not None:
+            try:
+                self.optimizer.load_state_dict(optimizer_state)
+            except ValueError as e:
+                logger.warning(
+                    "Failed to restore optimizer state for expert %s (will continue with fresh optimizer): %r",
+                    self.name,
+                    e,
+                    exc_info=True,
+                )
+
     def get_info(self) -> Dict[str, Any]:
         """Get expert parameters and stats. Used by RemoteExpert to check shapes and for distributed training coordination."""
         return dict(
@@ -256,4 +319,4 @@ class ExpertBackend:
 
     def get_pools(self) -> Sequence[TaskPool]:
         """return all pools that should be processed by ``Runtime``"""
-        return self.forward_pool, self.backward_pool
+        return self.forward_pool, self.backward_pool, self.forward_averaged_pool

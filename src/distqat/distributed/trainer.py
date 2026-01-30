@@ -1,5 +1,7 @@
 import torch
-torch.multiprocessing.set_sharing_strategy('file_descriptor')
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+# "file_system" uses filesystem-based shared memory instead of per-storage fd passing.
+torch.multiprocessing.set_sharing_strategy("file_system")
 import torch.nn.functional as F
 
 import signal
@@ -23,13 +25,11 @@ from distqat.distributed.optim.diloco import TrainingProgressSchema
 from distqat.config import Config, parse_args
 from distqat.distributed.optim.diloco import TrainingState
 from distqat.sharding import register_process, get_outer_step, set_outer_step_if_greater
-from distqat.models.wav2vec2 import get_feat_extract_output_lengths
-from distqat.distributed.data_client import DataClient
-from distqat.data import get_train_val_datasets
+from distqat.data import get_train_val_datasets, get_dataloader
 from torch.utils.data import DataLoader
-from distqat.distributed.data_server import BufferedShuffleIterable
 from distqat.data import collate_fn
-
+from distqat.models.ppo import compute_gae_returns
+from distqat.utils.loss import task_type_loss
 logger = get_logger(__name__)
 logger.setLevel('DEBUG')
 
@@ -50,7 +50,9 @@ class SwarmTrainer:
         trainer_id: int,
         config: Config,
         use_baseline_model: bool = False,
-        disable_quant: bool = False,
+        *,
+        dht=None,
+        local_expert_backends=None,
     ):
         self.config = config
         self.trainer_id = trainer_id
@@ -66,24 +68,17 @@ class SwarmTrainer:
             self.model = SwarmModel(
                 config=self.config,
                 trainer_id=self.trainer_id,
+                dht=dht,
+                local_expert_backends=local_expert_backends,
             )
         else:
             self.model = SwarmBaselineModel(
                 config=self.config,
                 trainer_id=self.trainer_id,
-                disable_quant=disable_quant,
+                disable_quant=config.disable_quant,
             )
 
-        # Mixed precision stability: GradScaler prevents overflow from corrupting weights.
-        self.scaler = None
-        # if (
-        #     self.use_baseline_model
-        #     and self.config.data.precision == "fp16-mixed"
-        #     and isinstance(self.device, str)
-        #     and self.device.startswith("cuda")
-        # ):
-        #         self.scaler = torch.amp.GradScaler()
-    
+
 
         self.process_id = self.model.dht.peer_id.to_string()
         register_process(self.model.dht, self.config.experiment_prefix, ttl=300.0)
@@ -95,8 +90,8 @@ class SwarmTrainer:
         
         # if self.use_baseline_model and self.config.world_size > 0:
         #     self.batch_size *= self.config.world_size
-        if self.use_baseline_model:
-            self.gradient_accumulation_steps *= self.config.world_size
+        # if self.use_baseline_model:
+        #     self.gradient_accumulation_steps *= self.config.world_size
             # self.inner_steps *= self.config.world_size
             
         effective_batch = self.batch_size * self.gradient_accumulation_steps
@@ -106,7 +101,11 @@ class SwarmTrainer:
         logger.info(f"  - Accumulation steps: {self.gradient_accumulation_steps}")
         logger.info(f"  - Effective batch size: {effective_batch}")
 
-        self.dataloader = self.get_dataloader()
+        if self.config.data.task_type == "rl":
+            self.dataloader = self._get_rl_dataloader()
+        else:
+            train_ds, _ = get_train_val_datasets(self.config.data)
+            self.dataloader = get_dataloader(self.config, train_ds)
         
         self.remaining_batch = None
         self.remaining_release = None
@@ -127,7 +126,8 @@ class SwarmTrainer:
             return uid, batch
         except StopIteration:
             logger.info("Dataset exhausted, recreating dataloader for next epoch")
-            self.dataloader = self.get_dataloader()
+            train_ds, _ = get_train_val_datasets(self.config.data)
+            self.dataloader = get_dataloader(self.config, train_ds)
             t0 = time.time()
             uid, batch = next(self.dataloader)
             dt = time.time() - t0
@@ -140,7 +140,8 @@ class SwarmTrainer:
                 logger.warning(f"FileNotFoundError in DataLoader (missing dataset file), recreating dataloader: {str(e)[:200]}")
                 logger.warning("This can happen when a parquet file is temporarily unavailable. Recreating dataloader to get a new shard assignment.")
                 time.sleep(1)  # Brief delay before retry
-                self.dataloader = self.get_dataloader()
+                train_ds, _ = get_train_val_datasets(self.config.data)
+                self.dataloader = get_dataloader(self.config, train_ds)
                 t0 = time.time()
                 uid, batch = next(self.dataloader)
                 dt = time.time() - t0
@@ -150,7 +151,8 @@ class SwarmTrainer:
             elif isinstance(e, RuntimeError) and "DataLoader worker" in str(e) and ("exited unexpectedly" in str(e) or "is killed" in str(e)):
                 logger.warning(f"DataLoader worker crashed (likely OOM), recreating dataloader: {e}")
                 logger.warning("Consider reducing num_workers in config if this happens frequently")
-                self.dataloader = self.get_dataloader()
+                train_ds, _ = get_train_val_datasets(self.config.data)
+                self.dataloader = get_dataloader(self.config, train_ds)
                 t0 = time.time()
                 uid, batch = next(self.dataloader)
                 dt = time.time() - t0
@@ -159,120 +161,208 @@ class SwarmTrainer:
             else:
                 raise
 
-    def get_dataloader(self):
-        ds, _ = get_train_val_datasets(self.config.data)
-        # ds = BufferedShuffleIterable(ds, buffer_size=self.config.data.shuffle_buffer_size, seed=0)
-        loader = DataLoader(
-            ds,                                 # yields (uid, sample) or sample
-            batch_size=self.batch_size,
-            num_workers=self.config.data.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            shuffle=False,
-            collate_fn=collate_fn(self.config.data, self.config.model_pipeline.pipeline[0]),
-            persistent_workers=self.config.data.num_workers > 0,
-            prefetch_factor=2 if self.config.data.num_workers > 0 else None,
-        )
-        return iter(loader)
+    def _get_rl_dataloader(self):
+        """
+        Infinite iterator that yields PPO minibatches:
+        inputs = (b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values)
+        labels = tensor([env_global_step], float32)  # for logging/monitoring
+        """
+        import gymnasium as gym
+        from distqat.utils.buffer import RolloutBuffer
 
-    def task_type_loss(self, inputs, outputs, labels, step=None):
-        if self.config.data.task_type == "cv":
-            return F.cross_entropy(outputs.float(), labels.to(outputs.device))
-        elif self.config.data.task_type == "llm":
-            # shift for next-token prediction
-            shift_logits = outputs[:, :-1, :].contiguous()
-            shift_labels = labels[:, 1:].contiguous()
+        cfg = self.config
+        device = torch.device(cfg.device) if not isinstance(cfg.device, torch.device) else cfg.device
 
-            loss = F.cross_entropy(
-                shift_logits.float().permute(0, 2, 1),
-                shift_labels.to(shift_logits.device),
-                reduction="none",
+        # --- env factory (copied from old data_server.py; keep it local to avoid import side effects) ---
+        def make_env(env_id, idx, gamma: float):
+            def thunk():
+                env = gym.make(env_id)
+                env = gym.wrappers.FlattenObservation(env)
+                env = gym.wrappers.RecordEpisodeStatistics(env)
+                env = gym.wrappers.ClipAction(env)
+                env = gym.wrappers.NormalizeObservation(env)
+                env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10), env.observation_space)
+                env = gym.wrappers.NormalizeReward(env, gamma=gamma)
+                env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
+                return env
+
+            return thunk
+
+        # --- PPO hyperparams ---
+        num_envs = int(cfg.ppo.num_envs)
+        num_steps = int(cfg.ppo.num_steps)
+        update_epochs = int(cfg.ppo.update_epochs)
+        minibatch_size = int(cfg.ppo.minibatch_size)
+        gamma = float(cfg.ppo.gamma)
+        gae_lambda = float(cfg.ppo.gae_lambda)
+
+        if minibatch_size <= 0:
+            raise ValueError(f"ppo.minibatch_size must be > 0, got {minibatch_size}")
+
+        # Best-effort warning if the RL minibatch size doesn't match the trainer microbatch size.
+        if minibatch_size != int(self.batch_size):
+            logger.warning(
+                f"RL minibatch_size (ppo.minibatch_size={minibatch_size}) != "
+                f"trainer batch_size_per_step (diloco.batch_size_per_step={int(self.batch_size)}). "
+                "This is allowed, but make sure it's intentional."
             )
-            loss = loss.mean()
-            if torch.isnan(loss) or torch.isinf(loss):
-                logger.warning(f"Found {loss.item()} loss in llm task!")
-            return loss
-        elif self.config.data.task_type == "speech":
-            attention_mask = torch.ones_like(inputs, dtype=torch.long)
-            model_name = self.config.data.full_model_name
-            input_lengths = get_feat_extract_output_lengths(attention_mask.sum(-1), config=AutoConfig.from_pretrained(model_name)).to(torch.long)
 
-            # assuming that padded tokens are filled with -100
-            # when not being attended to
-            labels_mask = labels >= 0
-            target_lengths = labels_mask.sum(-1)
-            flattened_targets = labels.masked_select(labels_mask)
+        # --- build envs ---
+        env_id = cfg.data.dataset_name
+        envs = gym.vector.SyncVectorEnv([make_env(env_id, i, gamma) for i in range(num_envs)])
+        try:
+            assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-            # ctc_loss doesn't support fp16
-            log_probs = F.log_softmax(outputs, dim=-1, dtype=torch.float32).transpose(0, 1)
+            obs_shape = tuple(envs.single_observation_space.shape)
+            action_shape = tuple(envs.single_action_space.shape)
 
-            with torch.backends.cudnn.flags(enabled=False):
-                loss = F.ctc_loss(
-                    log_probs,
-                    flattened_targets,
-                    input_lengths,
-                    target_lengths,
-                    reduction="mean",
+            # Prefer explicit dims from config, but fall back to env-derived values.
+            in_dim_cfg = getattr(cfg.model_pipeline.pipeline[0], "in_dim", None)
+            action_dim_cfg = getattr(cfg.model_pipeline.pipeline[0], "action_dim", None)
+            in_dim = int(in_dim_cfg) if in_dim_cfg is not None else int(np.prod(obs_shape))
+            action_dim = int(action_dim_cfg) if action_dim_cfg is not None else int(np.prod(action_shape))
+
+            # Sanity check for FlattenObservation.
+            if len(obs_shape) != 1 or obs_shape[0] != in_dim:
+                logger.warning(
+                    f"Env obs_shape={obs_shape} does not match in_dim={in_dim}. "
+                    "If you recently changed wrappers or model dims, fix this mismatch."
                 )
-            return loss
-        elif self.config.data.task_type == "image_gen":
-            D_loss, G_loss = outputs['D_loss'], outputs['G_loss']
-            D_loss.backward()
-            G_loss.backward()
-        elif self.config.data.task_type == "node_pred":
-            outputs = outputs.squeeze(0)
-            labels = labels.squeeze(0)
-            return F.cross_entropy(outputs, labels)
-        elif self.config.data.task_type == "rl":
-            b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values = inputs
-            _, newlogprob, entropy, newvalue = outputs
-            logratio = newlogprob - b_logprobs
-            ratio = logratio.exp()
 
-            with torch.no_grad():
-                old_approx_kl = (-logratio).mean()
-                approx_kl = ((ratio - 1) - logratio).mean()
-                clip_coef = float(self.config.ppo.clip_coef)
-                clipfrac = ((ratio - 1.0).abs() > clip_coef).float().mean().item()
+            rollout = RolloutBuffer(
+                num_steps=num_steps,
+                num_envs=num_envs,
+                obs_shape=obs_shape,
+                action_shape=action_shape,
+                device=device,
+                in_dim=in_dim,
+                action_dim=action_dim,
+            )
 
-            mb_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+            # --- init episode state ---
+            seed = (cfg.data.shuffle_seed or 42) + int(self.trainer_id) + 1
+            np.random.seed(seed)
+            torch.manual_seed(seed)
 
-            # Policy loss
-            pg_loss1 = -mb_advantages * ratio
-            pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+            next_obs_np, _ = envs.reset(seed=seed)
+            next_obs = torch.as_tensor(next_obs_np, device=device, dtype=torch.float32)
+            next_done = torch.zeros(num_envs, device=self.device, dtype=torch.float32)
+            env_global_step = 0
 
-            # Value loss
-            newvalue = newvalue.view(-1)
-            v_loss_unclipped = (newvalue - b_returns) ** 2
-            v_clipped = b_values + torch.clamp(newvalue - b_values, -clip_coef, clip_coef)
-            v_loss_clipped = (v_clipped - b_returns) ** 2
-            v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-            v_loss = 0.5 * v_loss_max.mean()
+            # PPO env metrics (episodic return/length) advance on an env-step clock, which is different
+            # from the train-step clock used for losses/optimizer progress.
+            # Publish these into a separate DHT key suffix so the monitor can aggregate them without
+            # clobbering train-step metrics.
+            from distqat.utils.metrics import MetricsLogger
+            if not hasattr(self, "_rl_metrics_logger") or self._rl_metrics_logger is None:
+                base = self.model.metrics_logger
+                self._rl_metrics_logger = MetricsLogger(
+                    dht=base.dht,
+                    model=base.model,
+                    local_public_key=base.local_public_key,
+                    experiment_prefix=base.experiment_prefix,
+                    statistics_expiration=base.statistics_expiration,
+                    trainer_id=base.trainer_id,
+                    key_suffix="_rl_metrics",
+                )
+            log_episodic = self._rl_metrics_logger.log_episodic_from_infos
+            # log_episodic = self.model.metrics_logger.log_episodic_from_infos
 
-            entropy_loss = entropy.mean()
-            loss = pg_loss - float(self.config.ppo.ent_coef) * entropy_loss + v_loss * float(self.config.ppo.vf_coef)
+            uid = 0
+            batch_size = num_envs * num_steps
+            if batch_size % minibatch_size != 0:
+                raise ValueError(
+                    f"ppo batch_size (num_envs*num_steps={batch_size}) must be divisible by "
+                    f"ppo.minibatch_size ({minibatch_size})"
+                )
+            num_minibatches = batch_size // minibatch_size
 
-            # logging
-            y_pred, y_true = b_values.detach().cpu().numpy(), b_returns.detach().cpu().numpy()
-            var_y = np.var(y_true)
-            explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-            log_scalar = self.model.metrics_logger.log_scalar
-            log_scalar("losses/value_loss", v_loss.item(), step)
-            log_scalar("losses/policy_loss", pg_loss.item(), step)
-            log_scalar("losses/entropy", entropy_loss.item(), step)
-            log_scalar("losses/old_approx_kl", old_approx_kl.item(), step)
-            log_scalar("losses/approx_kl", approx_kl.item(), step)
-            log_scalar("losses/clipfrac", clipfrac, step)
-            log_scalar("losses/explained_variance", float(explained_var), step)
-            log_scalar("charts/global_step", step, step)
+            # Check if we should use averaged policy for rollouts (distributed RL)
+            use_averaged_policy = getattr(cfg.ppo, 'use_averaged_policy_for_rollouts', False)
+            if use_averaged_policy:
+                logger.info("PPO configured to use averaged policy weights for rollout collection")
 
-            return loss
-        else:
-            raise ValueError(f"Unknown task type: {self.config.data.task_type}")
+            while True:
+                # Collect rollouts under current policy (this trainer's model).
+                rollout.reset()
+                agent = self.model
+                
+                rollout_start_time = time.time()
+                
+                # For remote models with averaged policy, we need to modify how rollouts are collected
+                # The RolloutBuffer.collect_and_add_step uses agent(obs, action) internally
+                # We'll create a wrapper that routes to forward_averaged when needed
+                from contextlib import nullcontext
+                
+                if use_averaged_policy:
+                    # Create a wrapper agent that uses forward_averaged for inference
+                    class AveragedPolicyWrapper:
+                        def __init__(self, model):
+                            self._model = model
+                        def __call__(self, inputs):
+                            return self._model.forward_averaged(inputs)
+                    rollout_agent = AveragedPolicyWrapper(self.model)
+                    rollout_context = nullcontext()
+                else:
+                    rollout_agent = agent
+                    rollout_context = nullcontext()
+                
+                with rollout_context:
+                    for _ in range(0, num_steps):
+                        env_global_step, next_obs, next_done = rollout.collect_and_add_step(
+                            agent=rollout_agent,
+                            envs=envs,
+                            global_step=env_global_step,
+                            next_obs=next_obs,
+                            next_done=next_done,
+                            log_episodic_from_infos=log_episodic,
+                        )
+                rollout_elapsed = time.time() - rollout_start_time
+                logger.info(f"Rollout collection completed: {num_steps} steps in {rollout_elapsed:.2f}s ({rollout_elapsed/num_steps*1000:.1f}ms/step, {num_steps*num_envs/rollout_elapsed:.1f} env_steps/s)")
+
+                # Compute GAE returns - also use averaged weights for next_value if applicable
+                if use_averaged_policy:
+                    gae_agent = rollout_agent
+                else:
+                    gae_agent = agent
+                gae_context = nullcontext()
+                
+                with gae_context:
+                    advantages, returns = compute_gae_returns(gae_agent, action_dim, next_obs, next_done, rollout.rewards, rollout.dones, rollout.values, gamma, gae_lambda)
+                
+
+                rollout.set_advantages_and_returns(advantages, returns)
+                b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values = rollout.get_batch()
+
+                # Yield PPO minibatches for multiple epochs.
+                for _epoch in range(update_epochs):
+                    b_inds = torch.randperm(batch_size, device=b_obs.device)
+                    for start in range(0, batch_size, minibatch_size):
+                        end = start + minibatch_size
+                        mb_inds = b_inds[start:end]
+
+                        mb_inputs = (
+                            b_obs[mb_inds],
+                            b_logprobs[mb_inds],
+                            b_actions[mb_inds],
+                            b_advantages[mb_inds],
+                            b_returns[mb_inds],
+                            b_values[mb_inds],
+                        )
+                        labels = torch.tensor([float(env_global_step)], device=b_obs.device, dtype=torch.float32)
+
+                        uid += 1
+                        yield uid, {"inputs": mb_inputs, "labels": labels}
+        finally:
+            try:
+                envs.close()
+            except Exception:
+                pass
+
 
 
     def step(self, inner_step: int, step: int):
+        raw_loss_sum = 0.0
         for accumulation_step in range(self.gradient_accumulation_steps):
             releases_to_call = []
 
@@ -319,16 +409,35 @@ class SwarmTrainer:
                 
                 if inner_step % 10 == 0 and accumulation_step == 0:
                     logger.info(f"Inner step {inner_step} of {self.inner_steps}")
-                    
 
             
             if self.config.data.task_type == "image_gen":
                 num_D_steps = self.config.biggan["num_D_steps"]
 
                 outputs = self.model((inputs, labels))
-                D_loss, G_loss = outputs[0], outputs[-1]
-                D_loss = D_loss / self.gradient_accumulation_steps
-                G_loss = G_loss / self.gradient_accumulation_steps
+                # BigGAN adapter serializes losses into an output tensor:
+                # D_loss at index 0, G_loss at index -1
+                D_loss_raw, G_loss_raw = outputs[0], outputs[-1]
+
+                # Scale losses for gradient accumulation (backward uses scaled values).
+                D_loss = D_loss_raw / self.gradient_accumulation_steps
+                G_loss = G_loss_raw / self.gradient_accumulation_steps
+
+                # Log individual losses as scalars so the monitor can forward them to wandb.
+                # (We intentionally do not touch wandb directly from trainers.)
+                try:
+                    log_scalar = getattr(getattr(self.model, "metrics_logger", None), "log_scalar", None)
+                    if callable(log_scalar):
+                        log_scalar("losses/D_loss", float(D_loss_raw.detach().item()), step)
+                        log_scalar("losses/G_loss", float(G_loss_raw.detach().item()), step)
+                        if float(G_loss_raw.detach().item()) != 0.0:
+                            log_scalar(
+                                "losses/D_over_G",
+                                float((D_loss_raw.detach() / G_loss_raw.detach()).item()),
+                                step,
+                            )
+                except Exception:
+                    pass
                 
                 # Log individual losses for GAN training diagnostics
                 if inner_step % 10 == 0:
@@ -339,52 +448,42 @@ class SwarmTrainer:
                     G_loss.backward()
                 # Logging the sum for monitoring although it's not a meaningful metric
                 loss = D_loss + G_loss
+                # Unscale for logging (per-accumulation loss is scaled by 1/grad_accum)
+                raw_loss_sum += float((loss.detach() * self.gradient_accumulation_steps).item())
             else:
                 if self.config.data.task_type == "rl":
                     b_obs, b_logprobs, b_actions, b_advantages, b_returns, b_values = inputs
+
                     outputs = self.model((b_obs, b_actions))
+                elif self.config.data.task_type == "llm" or self.config.data.task_type == "node_pred":
+                    outputs = self.model(inputs, labels)
                 else:
                     outputs = self.model(inputs)
-                loss = self.task_type_loss(inputs, outputs, labels, step)
-                loss = loss / self.gradient_accumulation_steps
-                if not torch.isfinite(loss):
+
+                
+                raw_loss = task_type_loss(self.config, inputs, outputs, labels, self.model.metrics_logger, step)
+                raw_loss_sum += float(raw_loss.detach().mean().item())
+                loss = raw_loss / self.gradient_accumulation_steps
+                if not torch.isfinite(loss).all():
                     logger.warning(f"Non-finite loss at step={step} (inner_step={inner_step}): {loss.item()}. Skipping update.")
                     self.model.zero_grad(set_to_none=True)
                     return
-                if self.scaler is not None:
-                    self.scaler.scale(loss).backward()
-                else:
-                    loss.backward()
+                loss.backward()
             
 
-            # Only step optimizer if we have accumulated enough gradients
-            if self.use_baseline_model:
-                # For baseline model the optimzer callback steps the optimizer so only step if we have accumulated enough gradients
-                if (inner_step + 1) % self.gradient_accumulation_steps == 0:
-                    if self.config.diloco.max_grad_norm is not None:
-                        # TODO: scaling needs to be implemented for server models as well, otherwise comparison with baseline model is not fair
-                        if self.scaler is not None and hasattr(self.model, "optimizer"):
-                            # clip on unscaled gradients under AMP
-                            self.scaler.unscale_(self.model.optimizer)
-                        nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.diloco.max_grad_norm))
-                    self.model.post_optimizer_callback(
-                        step,
-                        loss.item() * self.gradient_accumulation_steps,
-                        scaler=self.scaler,
-                    )
-            else:
-                # For swarm model the optimzer callback does not step the optimizer so log the loss every inner step
-                self.model.post_optimizer_callback(step, loss.item() * self.gradient_accumulation_steps)
-
-            if self.config.data.task_type == "image_gen":
-                if inner_step % self.config.biggan["eval_every"] == 0:
-                    self.model.evaluate(step)
-            
             for release in releases_to_call:
                 try:
                     release()
                 except Exception:
                     pass
+
+        # Log a stable, comparable value: mean raw loss over the accumulation window.
+        mean_raw_loss = raw_loss_sum / float(self.gradient_accumulation_steps)
+
+        if self.use_baseline_model and self.config.diloco.max_grad_norm is not None:
+            nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.diloco.max_grad_norm))
+
+        self.model.post_optimizer_callback(step, mean_raw_loss)
 
     def train(self):
         logger.info(f"============= Training for {self.num_total_steps} steps =============")
@@ -395,7 +494,7 @@ class SwarmTrainer:
         dht = self.model.dht 
         signature_validator = RSASignatureValidator()
         dht.add_validators([SchemaValidator(TrainingProgressSchema, prefix=prefix), signature_validator])
-       
+    
         step = 0
 
         logger.info(f"============= Checking Progress of other Servers =============")
@@ -467,15 +566,19 @@ class SwarmTrainer:
         logger.info(f"============= Training finished =============")
 
     def shutdown(self):
+        try:
+            if hasattr(self, "_rl_metrics_logger") and self._rl_metrics_logger is not None:
+                self._rl_metrics_logger.shutdown()
+        except Exception:
+            pass
         self.model.shutdown()
 
 
-def main(cfg: Config, trainer_id: int, run_locally: bool, disable_quant: bool = False):
+def main(cfg: Config, trainer_id: int, run_locally: bool):
     trainer = SwarmTrainer(
         trainer_id=trainer_id,
         config=cfg,
         use_baseline_model=run_locally,
-        disable_quant=disable_quant,
     )
     signal.signal(signal.SIGINT, signal.default_int_handler)
     
@@ -496,7 +599,6 @@ def main(cfg: Config, trainer_id: int, run_locally: bool, disable_quant: bool = 
 if __name__ == "__main__":
     parse_args_with_extra_kwargs = click.option("--trainer-id", type=int)(parse_args)
     parse_args_with_extra_kwargs = click.option("--run-locally", is_flag=True)(parse_args_with_extra_kwargs)
-    parse_args_with_extra_kwargs = click.option("--disable-quant", is_flag=True)(parse_args_with_extra_kwargs)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*is used more than once. Remove its duplicate as parameters should be unique.*")

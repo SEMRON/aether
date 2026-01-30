@@ -1,0 +1,62 @@
+name = "gcn"
+comment = """
+Example deployment configuration for Prime Intellect GPU cloud.
+"""
+
+[nodes.monitor]
+name = "gcn-test1-monitor"
+os = "ubuntu-22.04"
+[nodes.monitor.deployment]
+provider = "prime_intellect"
+[nodes.monitor.deployment.config]
+gpu_type = "CPU_NODE"
+
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Evaluation node (CPU-based, mirrors parameters from workers)
+[nodes.eval_node]
+name = "gcn-test1-eval"
+os = "ubuntu-22.04"
+[nodes.eval_node.deployment]
+provider = "prime_intellect"
+[nodes.eval_node.deployment.config]
+gpu_type = "CPU_NODE"
+
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Baseline evaluation node (runs without DiLoCo for comparison)
+[nodes.baseline_eval_node]
+name = "gcn-test1-baseline-eval"
+os = "ubuntu-22.04"
+[nodes.baseline_eval_node.deployment]
+provider = "prime_intellect"
+[nodes.baseline_eval_node.deployment.config]
+gpu_type = "CPU_NODE"
+
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# GPU worker nodes
+[nodes.gpu_node]
+name = "gcn-test1-gpu-nodes"
+os = "ubuntu-22.04"
+[nodes.gpu_node.array]
+count = 4
+name_template = "gcn-test1_{array_name}"
+[nodes.gpu_node.deployment]
+provider = "prime_intellect"
+[nodes.gpu_node.deployment.config]
+gpu_type = "CPU_NODE"
+
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]

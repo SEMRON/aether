@@ -20,6 +20,8 @@ dependencies = [
   "torch_geometric",
   "ogb",
   "gymnasium",
+  "gymnasium[mujoco]",
+  "s3fs",
 ]
 authors = [
   { name = "SEMRON" },

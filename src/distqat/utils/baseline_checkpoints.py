@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from shutil import copy2
 from tempfile import TemporaryDirectory
-from typing import Dict
+from typing import Any, Dict
 
 import torch
 
@@ -118,11 +118,23 @@ def store_checkpoint(model: torch.nn.Module, checkpoint_dir: Path, *, keep_histo
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     assert is_directory(checkpoint_dir)
     timestamp = datetime.now().isoformat(sep="_")
+    # Prefer an extended checkpoint payload when available (e.g. {"stats":..., "model":..., "optimizer":...}).
+    # Fall back to the historical format (plain model.state_dict()).
+    full_state: Any
+    if hasattr(model, "get_full_state") and callable(getattr(model, "get_full_state")):
+        try:
+            full_state = model.get_full_state()
+        except Exception as e:
+            logger.warning(f"Error getting full state for model, falling back to state_dict(): {e}")
+            full_state = model.state_dict()
+    else:
+        full_state = model.state_dict()
 
     if keep_history:
         checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.pt"
         tmp_checkpoint_path = checkpoint_dir / f".checkpoint_{timestamp}.pt.tmp"
-        torch.save(model.state_dict(), tmp_checkpoint_path)
+        
+        torch.save(full_state, tmp_checkpoint_path)
         os.replace(tmp_checkpoint_path, checkpoint_path)
         last_path = checkpoint_dir / "checkpoint_last.pt"
         tmp_last_path = checkpoint_dir / ".checkpoint_last.pt.tmp"
@@ -132,7 +144,8 @@ def store_checkpoint(model: torch.nn.Module, checkpoint_dir: Path, *, keep_histo
     else:
         checkpoint_path = checkpoint_dir / "checkpoint_last.pt"
         tmp_checkpoint_path = checkpoint_dir / ".checkpoint_last.pt.tmp"
-        torch.save(model.state_dict(), tmp_checkpoint_path)
+        
+        torch.save(full_state, tmp_checkpoint_path)
         os.replace(tmp_checkpoint_path, checkpoint_path)
 
         # Remove any historical timestamped checkpoints to enforce "only last".
@@ -157,6 +170,18 @@ def load_checkpoint(model: torch.nn.Module, checkpoint_dir: Path):
     latest_checkpoint = checkpoint_dir / "checkpoint_last.pt"
     if latest_checkpoint.exists():
         logger.debug(f"Loading checkpoint from {latest_checkpoint}")
-        model.load_state_dict(torch.load(latest_checkpoint))
+        obj = torch.load(latest_checkpoint, map_location="cpu")
+        # New/extended format: {"model": <state_dict>, "optimizer": ..., "stats": ...}
+        if isinstance(obj, dict) and "model" in obj and isinstance(obj["model"], dict):
+            # If the caller can restore the whole payload (including optimizer/stats), prefer that.
+            if hasattr(model, "load_full_state") and callable(getattr(model, "load_full_state")):
+                model.load_full_state(obj)
+            else:
+                model.load_state_dict(obj["model"], strict=False)
+        # Old format: plain state_dict (dict of tensors)
+        elif isinstance(obj, dict):
+            model.load_state_dict(obj, strict=False)
+        else:
+            raise ValueError(f"Unexpected checkpoint payload type: {type(obj)}")
     else:
         logger.warning(f"Failed to load checkpoint")
