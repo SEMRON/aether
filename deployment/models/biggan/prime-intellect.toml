@@ -1,0 +1,34 @@
+name = "gptneo"
+comment = """
+Example deployment configuration for Prime Intellect GPU cloud.
+"""
+
+[nodes.monitor]
+name = "gptneo-test1-monitor"
+os = "ubuntu-22.04"
+[nodes.monitor.deployment]
+provider = "prime_intellect"
+[nodes.monitor.deployment.config]
+gpu_type = "CPU_NODE"
+
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]
+
+# Single GPU worker node
+[nodes.gpu_node]
+name = "gptneo-test1-gpu-nodes"
+os = "ubuntu-22.04"
+[nodes.gpu_node.array]
+count = 3
+name_template = "gptneo-test1_{array_name}"
+[nodes.gpu_node.deployment]
+provider = "prime_intellect"
+[nodes.gpu_node.deployment.config]
+gpu_type = "A6000_48GB"
+
+team_id = "cmjbklw0g001610lfmxtlul5p"
+regions = ["united_states"]
+os_prefix = "ubuntu_22"
+provider_blacklist = ["runpod"]

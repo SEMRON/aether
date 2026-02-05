@@ -1,0 +1,87 @@
+wandb_project: "distqat"
+experiment_prefix: "resnet50_split"
+
+data:
+  # dataset_name: "ylecun/mnist"
+  # dataset_name: "uoft-cs/cifar10"
+  dataset_name: "ILSVRC/imagenet-1k"
+  dataset_split: "train"
+  task_type: "cv"
+  num_workers: 4
+  precision: "bf16-mixed"
+  num_channels: 3 # change to 1 for mnist
+  img_size: 224 # change to 224 for imagenet
+  dataset_num_shards: 267
+  # dataset_path: "/simdata/pahrendt/datasets"
+
+
+diloco:
+  inner_optim:
+    type: "sgd"
+    sgd_lr: 3.2
+    sgd_momentum: 0.9
+    sgd_nesterov: True
+    weight_decay: 0.0001
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.7
+    sgd_momentum: 0.9
+    sgd_nesterov: True
+  inner_steps: 64
+  outer_steps: 4000
+  batch_size_per_step: 512
+  min_refresh_period: 5.0
+  max_refresh_period: 30.0
+  verbose: true
+  # max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+  metadata_expiration: 900.0
+  num_warmup_steps: 800
+  scheduler: "cosine"
+
+
+  averaging_timeout: 900.0
+  target_group_size: 4
+  min_group_size: 2
+  min_matchmaking_time: 600.0
+  request_timeout: 120.0
+
+
+model_pipeline:
+  pipeline:
+    - model_name: "resnet50.head"
+      num_classes: 1000
+    - model_name: "resnet50.tail"
+      num_classes: 1000
+  forward_timeout: 300.0
+  backward_timeout: 600.0
+
+network:
+  expert_dht_update_period: 30.0
+  expert_dht_expiration: 900.0
+  metrics_expiration: 900.0
+
+  skip_load_from_peers: true
+  skip_load_checkpoints: true
+
+  monitor_port: 50010
+  client_port: 51010
+  trainer_base_port: 50110
+  server_base_hostport: 50510
+  server_base_hostport_announce: 50510
+  server_base_grpcport: 51510
+  server_base_grpc_announceport: 51510
+
+param_mirror:
+  enable: false
+  refresh_every: 30
+
+
+world_size: 1
+device: "cuda"
+max_expert_index: 128
+# log_dir: "logs/resnet50"
+# log_dir is derived automatically as logs/<experiment_prefix> unless explicitly set
+# checkpoint_dir: "checkpoints"
+# checkpoint_keep_history: true
+# checkpoint_update_period: 600

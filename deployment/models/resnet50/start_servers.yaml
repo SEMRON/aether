@@ -1,0 +1,533 @@
+# site.yml
+# Usage:
+#   ansible-playbook -i inventory.yaml start_servers.yaml                    # default: action=all
+#   ansible-playbook -i inventory.yaml start_servers.yaml -e action=stop     # stop service only
+#   ansible-playbook -i inventory.yaml start_servers.yaml -e action=restart  # restart service only
+#   ansible-playbook -i inventory.yaml start_servers.yaml -e action=start    # start service only
+#   ansible-playbook -i inventory.yaml start_servers.yaml -e action=setup    # setup only (no start)
+#   ansible-playbook -i inventory.yaml start_servers.yaml -e action=all      # full setup + start
+- name: Unified distqat + resnet50 setup (monitor first, then workers)
+  hosts: "*resnet50*"
+  gather_facts: true
+
+  vars:
+    # -------------------------
+    # Action control (stop, start, restart, setup, all)
+    # -------------------------
+    action: "all"
+
+    # -------------------------
+    # Inventory / groups
+    # -------------------------
+    monitor_group_name: "monitor"
+    # eval_group_name: "eval_node"
+    worker_group_names:
+      # - "gpu_node_rtx6000"
+      - "gpu_node_a6000"
+      # - "gpu_node_a100"
+      # - "gpu_node_l40s"
+
+    # -------------------------
+    # Node list/IDs
+    # -------------------------
+    # All nodes from inventory.yaml, in assignment order:
+    node_name_id_map:
+      # RTX6000 nodes
+      resnet50-test1_1: 0
+      resnet50-test1_2: 1
+      resnet50-test1_3: 2
+      resnet50-test1_4: 3
+      # resnet50-test1_5: 4
+      # resnet50-test1_6: 5
+      # resnet50-test1_7: 6
+      # resnet50-test1_8: 7
+      # resnet50-test1_9: 8
+      # resnet50-test1_10: 9
+      # resnet50-test1_11: 10
+      # resnet50-test1_12: 11
+      # resnet50-test1_13: 12
+      # resnet50-test1_14: 13
+      # resnet50-test1_15: 14
+      # resnet50-test1_16: 15
+      # A6000 nodes (slowest)
+      # resnet50-test2_1: 4
+      # resnet50-test2_2: 5
+      # resnet50-test2_3: 6
+      # resnet50-test2_4: 7
+      # # A100 nodes
+      # resnet50-test3_1: 8
+      # resnet50-test3_2: 9
+      # resnet50-test3_3: 10
+      # resnet50-test3_4: 11
+      # # L40S nodes
+      # resnet50-test4_1: 12
+      # resnet50-test4_2: 13
+      # resnet50-test4_3: 14
+      # resnet50-test4_4: 15
+
+    resnet50_node_id: "{{ node_name_id_map[inventory_hostname] | default(-1) }}"
+
+    # -------------------------
+    # Repo / install
+    # -------------------------
+    github_pat: "{{ lookup('env', 'GITHUB_PAT') }}"
+    repo_url: "https://{{ github_pat }}@github.com/SEMRON/distqat.git"
+    repo_dest: "{{ ansible_facts['env']['HOME'] }}/distqat"
+
+    # -------------------------
+    # uv / python
+    # -------------------------
+    uv_bin: "/snap/bin/uv"
+    python_version: "3.10"
+
+    # -------------------------
+    # Tokens (prefer --extra-vars or Vault)
+    # -------------------------
+    wandb_api_key: "{{ lookup('env', 'WANDB_API_KEY') }}"
+    hf_token: "{{ lookup('env', 'HF_TOKEN') }}"
+
+    # -------------------------
+    # Model / network selection (parameterized)
+    # -------------------------
+    resnet50_network_type: "resnet50"
+    resnet50_config_path: "configs/{{ resnet50_network_type }}.yaml"
+
+    # -------------------------
+    # Paths / files
+    # -------------------------
+    resnet50_logs_dir: "{{ repo_dest }}/logs/resnet50"
+    initial_peers_filename: "initial_peers.txt"
+    wandb_run_id_filename: "wandb_run_id.txt"
+
+    # -------------------------
+    # Services
+    # -------------------------
+    trainer_client_service_name: "resnet50-trainer-client"
+    trainer_client_exec: "{{ repo_dest }}/.venv/bin/python start_trainer_client.py --config-path {{ resnet50_config_path }}"
+    worker_service_name: "resnet50-server"
+    # eval_service_name: "resnet50-evaluate"
+
+    # -------------------------
+    # Systemd environment injection (visible to services)
+    # -------------------------
+    systemd_env_dir: "/etc/default"
+    systemd_env_file: "{{ systemd_env_dir }}/distqat-resnet50.env"
+
+    # -------------------------
+    # Python extras per role
+    # -------------------------
+    worker_extras: "gpuspecific"
+
+    # -------------------------
+    # DiLoCo inner steps per node (calibrated from measured speeds)
+    # -------------------------
+    diloco_inner_steps_map:
+    #   # RTX6000 nodes (expert 0-3)
+      # resnet50-test1_1: 45   # expert 0, speed 0.94
+      # resnet50-test1_2: 45   # expert 1, speed 0.99
+      # resnet50-test1_3: 45   # expert 2, speed 0.92
+      # resnet50-test1_4: 45   # expert 3, speed 0.99
+      # # A6000 nodes (expert 4-7, slowest)
+      # resnet50-test2_1: 35   # expert 4, speed 0.88 (slowest)
+      # resnet50-test2_2: 35   # expert 5, speed 0.91
+      # resnet50-test2_3: 35   # expert 6, speed 0.93
+      # resnet50-test2_4: 35   # expert 7, speed 0.92
+      # # A100 nodes (expert 8-11, fastest)
+      # resnet50-test3_1: 65   # expert 8, speed 1.00 (fastest)
+      # resnet50-test3_2: 65   # expert 9, speed 1.00 (fastest)
+      # resnet50-test3_3: 65   # expert 10, speed 0.97
+      # resnet50-test3_4: 65   # expert 11, speed 0.97
+      # # L40S nodes (expert 12-15)
+      # resnet50-test4_1: 50   # expert 12, speed 0.94
+      # resnet50-test4_2: 50   # expert 13, speed 0.96
+      # resnet50-test4_3: 50   # expert 14, speed 0.90
+      # resnet50-test4_4: 50   # expert 15, speed 0.95
+    default_diloco_inner_steps: 64
+
+    # -------------------------
+    # Evaluation interval
+    # -------------------------
+    # eval_interval: 120
+
+  tasks:
+    # =========================================================================
+    # COMPUTE ROLE MEMBERSHIP
+    # =========================================================================
+    - name: Compute role membership and monitor host
+      ansible.builtin.set_fact:
+        is_monitor: "{{ inventory_hostname in (groups[monitor_group_name] | default([])) }}"
+        is_worker: "{{ inventory_hostname in node_name_id_map }}"
+        # is_eval: "{{ inventory_hostname in (groups[eval_group_name] | default([])) }}"
+        monitor_host: "{{ (groups[monitor_group_name] | default([])) | first | default('') }}"
+        initial_peers_remote_path: "{{ resnet50_logs_dir }}/{{ initial_peers_filename }}"
+        initial_peers_local_tmp: "/tmp/{{ initial_peers_filename }}.resnet50.from_monitor"
+        wandb_run_id_remote_path: "{{ resnet50_logs_dir }}/{{ wandb_run_id_filename }}"
+        wandb_run_id_local_tmp: "/tmp/{{ wandb_run_id_filename }}.resnet50.from_monitor"
+        inner_steps: "{{ diloco_inner_steps_map[inventory_hostname] | default(default_diloco_inner_steps) }}"
+
+    # =========================================================================
+    # STOP ACTION - Stop services only
+    # =========================================================================
+    - name: Stop ResNet50 worker service (action=stop)
+      when:
+        - action in ["all", "stop", "restart"]
+        - is_worker
+      ansible.builtin.systemd:
+        name: "{{ worker_service_name }}.service"
+        state: stopped
+      become: true
+      failed_when: false
+
+    - name: Stop ResNet50 trainer client service on monitor (action=stop)
+      when:
+        - action in ["all", "stop", "restart"]
+        - is_monitor
+      ansible.builtin.systemd:
+        name: "{{ trainer_client_service_name }}.service"
+        state: stopped
+      become: true
+      failed_when: false
+
+    # - name: Stop ResNet50 evaluate service on eval node (action=stop)
+    #   when:
+    #     - action in ["all", "stop", "restart"]
+    #     - is_eval
+    #   ansible.builtin.systemd:
+    #     name: "{{ eval_service_name }}.service"
+    #     state: stopped
+    #   become: true
+    #   failed_when: false
+
+    - name: Kill any remaining distqat processes (action=stop)
+      when: action in ["all", "stop", "restart"]
+      ansible.builtin.shell: pkill -f distqat || true
+      become: true
+      failed_when: false
+
+    # =========================================================================
+    # SETUP TASKS - Environment and config (action=all or action=setup)
+    # =========================================================================
+    - name: Write environment file for services
+      when: action in ["all", "setup"]
+      ansible.builtin.copy:
+        dest: "{{ systemd_env_file }}"
+        owner: root
+        group: root
+        mode: "0640"
+        content: |
+          # Managed by Ansible
+          {% if wandb_api_key | default('') | length > 0 -%}
+          WANDB_API_KEY={{ wandb_api_key }}
+          {% endif -%}
+          {% if hf_token | default('') | length > 0 -%}
+          HF_TOKEN={{ hf_token }}
+          {% endif -%}
+      become: true
+
+    - name: Copy config file to remote nodes
+      when: action in ["all", "setup"]
+      ansible.builtin.copy:
+        src: "../../../{{ resnet50_config_path }}"
+        dest: "{{ repo_dest }}/{{ resnet50_config_path }}"
+        owner: "{{ ansible_facts['env']['USER'] | default('ubuntu') }}"
+        group: "{{ ansible_facts['env']['USER'] | default('ubuntu') }}"
+        mode: '0644'
+
+    - name: Ensure resnet50 logs dir exists
+      when:
+        - action in ["all", "setup"]
+        - (is_monitor or is_worker)
+      ansible.builtin.file:
+        path: "{{ resnet50_logs_dir }}"
+        state: directory
+        mode: "0755"
+
+    # =========================================================================
+    # MONITOR: Start trainer client service first (action=all or action=start/restart)
+    # =========================================================================
+    - name: Setup and start trainer client on monitor
+      when:
+        - is_monitor
+        - action in ["all", "setup", "start", "restart"]
+      block:
+        - name: Remove existing monitor service if present
+          when: action in ["all", "setup"]
+          block:
+            - name: Stop existing monitor service if running
+              ansible.builtin.systemd:
+                name: "{{ trainer_client_service_name }}.service"
+                state: stopped
+              failed_when: false
+
+            - name: Disable existing monitor service
+              ansible.builtin.systemd:
+                name: "{{ trainer_client_service_name }}.service"
+                enabled: false
+              failed_when: false
+
+            - name: Remove monitor systemd unit file if exists
+              ansible.builtin.file:
+                path: "/etc/systemd/system/{{ trainer_client_service_name }}.service"
+                state: absent
+              become: true
+
+        - name: Write trainer client systemd unit (monitor)
+          when: action in ["all", "setup"]
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ trainer_client_service_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Trainer Client Service ({{ resnet50_network_type }})
+              After=network.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory={{ repo_dest }}
+              ExecStart={{ trainer_client_exec }}
+              Restart=always
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+
+              [Install]
+              WantedBy=multi-user.target
+          become: true
+
+        - name: Reload systemd (monitor)
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+        - name: Enable and start trainer client service (monitor)
+          when: action in ["all", "start", "restart"]
+          ansible.builtin.systemd:
+            name: "{{ trainer_client_service_name }}.service"
+            enabled: yes
+            state: restarted
+          become: true
+
+    # =========================================================================
+    # WAIT FOR MONITOR TO GENERATE INITIAL PEERS (action=all or action=start/restart)
+    # =========================================================================
+    - name: Wait until initial peers file exists and has content on monitor
+      when:
+        - action in ["all", "start", "restart"]
+        - monitor_host | length > 0
+      ansible.builtin.stat:
+        path: "{{ initial_peers_remote_path }}"
+      register: peers_stat
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      until: peers_stat.stat.exists and peers_stat.stat.size | default(0) > 0
+      retries: 120
+      delay: 2
+
+    - name: Wait until wandb_run_id file exists and has content on monitor
+      when:
+        - action in ["all", "start", "restart"]
+        - monitor_host | length > 0
+      ansible.builtin.stat:
+        path: "{{ wandb_run_id_remote_path }}"
+      register: wandb_id_stat
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      until: wandb_id_stat.stat.exists and wandb_id_stat.stat.size | default(0) > 0
+      retries: 120
+      delay: 2
+
+    - name: Fetch initial peers file from monitor to control machine
+      when:
+        - action in ["all", "start", "restart"]
+        - monitor_host | length > 0
+      ansible.builtin.fetch:
+        src: "{{ initial_peers_remote_path }}"
+        dest: "{{ initial_peers_local_tmp }}"
+        flat: yes
+        validate_checksum: no
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      retries: 3
+      delay: 2
+
+    - name: Fetch wandb_run_id file from monitor to control machine
+      when:
+        - action in ["all", "start", "restart"]
+        - monitor_host | length > 0
+      ansible.builtin.fetch:
+        src: "{{ wandb_run_id_remote_path }}"
+        dest: "{{ wandb_run_id_local_tmp }}"
+        flat: yes
+        validate_checksum: no
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      retries: 3
+      delay: 2
+
+    - name: Copy initial peers file to workers and eval node
+      when:
+        - action in ["all", "start", "restart"]
+        - is_worker
+        - not is_monitor
+      ansible.builtin.copy:
+        src: "{{ initial_peers_local_tmp }}"
+        dest: "{{ initial_peers_remote_path }}"
+        mode: "0644"
+
+    - name: Copy wandb_run_id file to workers and eval node
+      when:
+        - action in ["all", "start", "restart"]
+        - is_worker
+        - not is_monitor
+      ansible.builtin.copy:
+        src: "{{ wandb_run_id_local_tmp }}"
+        dest: "{{ wandb_run_id_remote_path }}"
+        mode: "0644"
+
+    # =========================================================================
+    # WORKERS: Setup and start server service (action=all or action=setup/start/restart)
+    # =========================================================================
+    - name: Setup worker server
+      when:
+        - is_worker
+        - not is_monitor
+        - action in ["all", "setup"]
+      block:
+        - name: Remove existing worker service if present
+          block:
+            - name: Stop existing worker service if running
+              ansible.builtin.systemd:
+                name: "{{ worker_service_name }}.service"
+                state: stopped
+              failed_when: false
+
+            - name: Disable existing worker service
+              ansible.builtin.systemd:
+                name: "{{ worker_service_name }}.service"
+                enabled: false
+              failed_when: false
+
+            - name: Remove worker systemd unit file if exists
+              ansible.builtin.file:
+                path: "/etc/systemd/system/{{ worker_service_name }}.service"
+                state: absent
+              become: true
+
+            - name: Reload systemd daemon after removal
+              ansible.builtin.systemd:
+                daemon_reload: yes
+              become: true
+
+        - name: Write worker systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ worker_service_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=ResNet50 Worker Server (expert {{ resnet50_node_id }})
+              After=network.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory={{ repo_dest }}
+              ExecStart=/bin/bash -c '{{ repo_dest }}/.venv/bin/python start_servers.py --config-path {{ resnet50_config_path }} --initial-peers-path {{ initial_peers_remote_path }} --num-servers 1 --stage-index 0 --expert-index {{ resnet50_node_id }} --diloco-inner-steps {{ inner_steps }} --wandb-run-id "$(cat {{ wandb_run_id_remote_path }})"'
+              Restart=always
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+
+              [Install]
+              WantedBy=multi-user.target
+          become: true
+
+        - name: Reload systemd daemon (worker)
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+    - name: Enable and start worker service
+      when:
+        - is_worker
+        - not is_monitor
+        - action in ["all", "start", "restart"]
+      ansible.builtin.systemd:
+        name: "{{ worker_service_name }}.service"
+        enabled: yes
+        state: restarted
+      become: true
+
+    # =========================================================================
+    # EVAL NODE: Setup and start evaluation service (action=all or action=setup/start/restart)
+    # =========================================================================
+    # - name: Setup eval node service
+    #   when:
+    #     - is_eval
+    #     - action in ["all", "setup"]
+    #   block:
+    #     - name: Remove existing eval service if present
+    #       block:
+    #         - name: Stop existing eval service if running
+    #           ansible.builtin.systemd:
+    #             name: "{{ eval_service_name }}.service"
+    #             state: stopped
+    #           failed_when: false
+
+    #         - name: Disable existing eval service
+    #           ansible.builtin.systemd:
+    #             name: "{{ eval_service_name }}.service"
+    #             enabled: false
+    #           failed_when: false
+
+    #         - name: Remove eval systemd unit file if exists
+    #           ansible.builtin.file:
+    #             path: "/etc/systemd/system/{{ eval_service_name }}.service"
+    #             state: absent
+    #           become: true
+
+    #         - name: Reload systemd daemon after removal
+    #           ansible.builtin.systemd:
+    #             daemon_reload: yes
+    #           become: true
+
+    #     - name: Write eval systemd unit
+    #       ansible.builtin.copy:
+    #         dest: "/etc/systemd/system/{{ eval_service_name }}.service"
+    #         owner: root
+    #         group: root
+    #         mode: "0644"
+    #         content: |
+    #           [Unit]
+    #           Description=ResNet50 Continuous Evaluation (Parameter Mirror)
+    #           After=network.target
+
+    #           [Service]
+    #           Type=simple
+    #           WorkingDirectory={{ repo_dest }}
+    #           ExecStart={{ repo_dest }}/.venv/bin/python deployment/models/resnet50/evaluate.py --eval-interval {{eval_interval}} --wandb-run-id-path {{ wandb_run_id_remote_path }}
+    #           Restart=always
+    #           User={{ ansible_facts['env']['USER'] }}
+    #           EnvironmentFile={{ systemd_env_file }}
+    #           Environment=PYTHONUNBUFFERED=1
+
+    #           [Install]
+    #           WantedBy=multi-user.target
+    #       become: true
+
+    #     - name: Reload systemd daemon (eval node)
+    #       ansible.builtin.systemd:
+    #         daemon_reload: yes
+    #       become: true
+
+    # - name: Enable and start eval service
+    #   when:
+    #     - is_eval
+    #     - action in ["all", "start", "restart"]
+    #   ansible.builtin.systemd:
+    #     name: "{{ eval_service_name }}.service"
+    #     enabled: yes
+    #     state: restarted
+    #   become: true

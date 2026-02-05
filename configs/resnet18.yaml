@@ -51,7 +51,8 @@ data_server:
   num_workers: 1
   pool_size: 32
 
-world_size: 2
 device: "cuda"
 max_expert_index: 128
 log_dir: "logs/resnet18"
+checkpoint_dir: "checkpoints/resnet18"
+checkpoint_keep_history: false

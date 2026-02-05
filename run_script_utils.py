@@ -73,8 +73,11 @@ def spawn_process(cmd, logfile):
 
 
 def create_initial_peers_file(log_dir: Path):
-    initial_peers_path = log_dir / "initial_peers.txt"
-    initial_peers_path.parent.mkdir(parents=True, exist_ok=True)
+    # Store in logs/ directly (parent of log_dir), not in logs/<experiment_name>/
+    # This makes the file config-agnostic and easier to share across experiments
+    logs_base_dir = log_dir.parent
+    initial_peers_path = logs_base_dir / "initial_peers.txt"
+    logs_base_dir.mkdir(parents=True, exist_ok=True)
     initial_peers_path.touch()
     return initial_peers_path
 
@@ -145,7 +148,7 @@ def ensure_no_leftover_distqat_processes():
     if not pgrep:
         return
 
-    result = subprocess.run([pgrep, "-af", "distqat"], capture_output=True, text=True, check=False)
+    result = subprocess.run([pgrep, "-af", "distqat/"], capture_output=True, text=True, check=False)
     if result.returncode not in (0, 1):
         # Unable to determine; assume safe to continue.
         return
@@ -190,18 +193,25 @@ def run_monitor_proc(config_path: str, refresh_period: int, store_ip_addresses_p
         "--config-path", config_path,
         "--refresh-period", str(refresh_period),
         "--store-ip-addresses-path", store_ip_addresses_path,
-        "--wandb-run-id", wandb_run_id,
     ]
+    if wandb_run_id:
+        monitor_cmd.extend(["--wandb-run-id", wandb_run_id])
     if public_ip:
         hostmaddr, announcemaddr = get_monitor_addresses(public_ip=public_ip, network_config=config.network)
         monitor_cmd.extend(["--network-host-maddrs", hostmaddr])
         monitor_cmd.extend(["--network-announce-maddrs", announcemaddr])
 
-    monitor_proc = spawn_process(monitor_cmd, logfile=None)
+    # Always write monitor stdout/stderr to a file so logs survive subprocess spawning
+    # (and so users can tail logs even if the parent terminal doesn't show child output).
+    log_path = config.log_dir / "monitor.log"
+    log_file = open(log_path, "w")
+    monitor_proc = spawn_process(monitor_cmd, logfile=log_file)
+    # Keep a reference so the file handle isn't GC'd early.
+    monitor_proc._distqat_log_file = log_file  # type: ignore[attr-defined]
     return monitor_proc
 
 
-def run_client_proc(config_path: str, refresh_period: int, network_initial_peers: str, public_ip: Optional[str] = None, disable_quant: bool = False, wandb_run_id: Optional[str] = None):
+def run_client_proc(config_path: str, refresh_period: int, network_initial_peers: str, public_ip: Optional[str] = None, wandb_run_id: Optional[str] = None):
     config = parse_yaml_file_as(Config, config_path)
     client_cmd = [
         sys.executable, ROOT_DIR / "src/distqat/distributed/client.py",
@@ -214,29 +224,31 @@ def run_client_proc(config_path: str, refresh_period: int, network_initial_peers
         hostmaddr, announcemaddr = get_client_addresses(public_ip=public_ip, network_config=config.network)
         client_cmd.extend(["--network-host-maddrs", hostmaddr])
         client_cmd.extend(["--network-announce-maddrs", announcemaddr])
-    if disable_quant:
-        client_cmd.append("--disable-quant")
     if wandb_run_id:
         client_cmd.extend(["--wandb-run-id", wandb_run_id])
-    return spawn_process(client_cmd, logfile=None)
+    log_path = config.log_dir / "client.log"
+    log_file = open(log_path, "w")
+    proc = spawn_process(client_cmd, logfile=log_file)
+    proc._distqat_log_file = log_file  # type: ignore[attr-defined]
+    return proc
 
 
-def run_server_proc(config_path: str, network_initial_peers: str, public_ip: Optional[str] = None, idx: int = 0, stage_index: Optional[int] = None, disable_quant: bool = False, device: Optional[str] = None, diloco_batch_size_per_step: Optional[int] = None, wandb_run_id: Optional[str] = None):
+def run_server_proc(config_path: str, network_initial_peers: str, public_ip: Optional[str] = None, idx: int = 0, stage_index: Optional[int] = None, device: Optional[str] = None, diloco_batch_size_per_step: Optional[int] = None, wandb_run_id: Optional[str] = None):
     config = parse_yaml_file_as(Config, config_path)
     server_cmd = [
         sys.executable, ROOT_DIR / "src/distqat/distributed/server.py",
         "--config-path", config_path,
         "--network-initial-peers", network_initial_peers,
+        "--trainer-in-process",
     ]
     if public_ip:
-        hostmaddr, announcemaddr, listen_on, announce_endpoint = get_server_addresses(public_ip=public_ip, network_config=config.network, idx=idx)
+        portidx = idx + stage_index if stage_index is not None else idx
+        hostmaddr, announcemaddr, listen_on, announce_endpoint = get_server_addresses(public_ip=public_ip, network_config=config.network, idx=portidx)
         server_cmd.extend(["--network-host-maddrs", hostmaddr])
         server_cmd.extend(["--network-announce-maddrs", announcemaddr])
         # Bind to all interfaces, but announce the public endpoint for cross-machine access
         server_cmd.extend(["--listen-on", listen_on])
         server_cmd.extend(["--announce-endpoint", announce_endpoint])
-    if disable_quant:
-        server_cmd.append("--disable-quant")
     if device:
         server_cmd.extend(["--device", device])
     if diloco_batch_size_per_step:
@@ -249,16 +261,15 @@ def run_server_proc(config_path: str, network_initial_peers: str, public_ip: Opt
     return spawn_process(server_cmd, logfile=None)
 
 
-def run_baseline_model_trainer_proc(config_path: str, network_initial_peers: str, public_ip: Optional[str] = None, disable_quant: bool = False, log_dir: Path = None):
+def run_baseline_model_trainer_proc(config_path: str, network_initial_peers: str, public_ip: Optional[str] = None, log_dir: Path = None, gradient_accumulation_steps: int = 1):
     baseline_cmd = [
         sys.executable, ROOT_DIR / "src/distqat/distributed/trainer.py",
         "--run-locally",
         "--trainer-id", "-1",
         "--config-path", config_path,
         "--network-initial-peers", network_initial_peers,
+        "--diloco-gradient-accumulation-steps", str(gradient_accumulation_steps),
     ]
-    if disable_quant:
-        baseline_cmd.append("--disable-quant")
     log_file = open(log_dir / f"baseline_model_trainer.log", "w")
     return spawn_process(baseline_cmd, logfile=log_file)
 
@@ -269,3 +280,34 @@ def is_wandb_logged_in():
         return True
     except Exception:
         return False
+
+def run_evaluator_proc(config_path: str, network_initial_peers: str, eval_interval: int = 60, max_batches_per_eval: Optional[int] = None, log_dir: Path = None):
+    evaluator_cmd = [
+        sys.executable, ROOT_DIR / "src/distqat/distributed/evaluator.py",
+        "--config-path", config_path,
+        "--network-initial-peers", network_initial_peers,
+        "--eval-interval", str(eval_interval),
+        "--max-batches-per-eval", str(max_batches_per_eval),
+    ]
+    log_file = open(log_dir / f"evaluator.log", "w")
+    return spawn_process(evaluator_cmd, logfile=log_file)
+
+
+def run_baseline_evaluator_proc(config_path: str, network_initial_peers: str, eval_interval: int = 60, max_batches_per_eval: Optional[int] = None, log_dir: Path = None):
+    """
+    Run the evaluator in baseline mode, which loads checkpoints from disk
+    instead of using ParamMirror to sync from distributed peers.
+    
+    This evaluates the baseline model's checkpoints stored at:
+    <checkpoint_dir>/baseline/checkpoint_last.pt
+    """
+    evaluator_cmd = [
+        sys.executable, ROOT_DIR / "src/distqat/distributed/evaluator.py",
+        "--config-path", config_path,
+        "--network-initial-peers", network_initial_peers,
+        "--eval-interval", str(eval_interval),
+        "--max-batches-per-eval", str(max_batches_per_eval),
+        "--baseline",  # Enable baseline mode
+    ]
+    log_file = open(log_dir / f"baseline_evaluator.log", "w")
+    return spawn_process(evaluator_cmd, logfile=log_file)

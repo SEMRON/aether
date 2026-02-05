@@ -68,12 +68,24 @@ class Distribution(torch.Tensor):
 
 # Convenience function to prepare a z and y vector
 def prepare_z_y(G_batch_size, dim_z, nclasses, device='cuda', 
-                fp16=False,z_var=1.0):
+                fp16=False, bf16=False, z_var=1.0):
   z_ = Distribution(torch.randn(G_batch_size, dim_z, requires_grad=False))
   z_.init_distribution('normal', mean=0, var=z_var)
-  z_ = z_.to(device,torch.float16 if fp16 else torch.float32)   
   
-  if fp16:
+  # Determine dtype based on precision flags (bf16 takes precedence over fp16)
+  if bf16:
+    dtype = torch.bfloat16
+  elif fp16:
+    dtype = torch.float16
+  else:
+    dtype = torch.float32
+  
+  z_ = z_.to(device, dtype)
+  
+  # Ensure correct dtype after to() call
+  if bf16:
+    z_ = z_.to(torch.bfloat16)
+  elif fp16:
     z_ = z_.half()
 
   y_ = Distribution(torch.zeros(G_batch_size, requires_grad=False))

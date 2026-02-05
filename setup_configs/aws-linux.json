@@ -14,7 +14,7 @@
   "final_commands": null,
   "open_ports": [],
   "source_url": "https://github.com/SEMRON/aether.git",
-  "source_ref": "master",
+  "source_ref": "aether-dev",
   "sources_target_dir": "distqat",
   "username": "ubuntu",
   "management_user": null

@@ -1,0 +1,110 @@
+# Deploy a local file to remote hosts and run it as a systemd service
+#
+# Required variables:
+#   SERVICE_NAME: Name of the systemd service (e.g., "my-app")
+#   LOCAL_FILE_PATH: Path to the executable file on the host machine
+#
+# Optional variables:
+#   REMOTE_INSTALL_DIR: Directory to install the file (default: /opt/{{ SERVICE_NAME }})
+#   SERVICE_USER: User to run the service as (default: root, use 'ansible_user' for the ansible connection user)
+#   SERVICE_ARGS: Arguments to pass to the executable (default: "")
+#   SERVICE_WORKING_DIR: Working directory for the service (default: REMOTE_INSTALL_DIR)
+#   SERVICE_RESTART: Restart policy (default: on-failure)
+#   SERVICE_ENV: Environment variables as key=value pairs (default: [])
+#
+# Example usage:
+#   python run-tasks.py deploy-service -D SERVICE_NAME=myapp -D LOCAL_FILE_PATH=/path/to/myapp
+
+- name: Validate SERVICE_NAME is defined
+  ansible.builtin.fail:
+    msg: "Required variable 'SERVICE_NAME' is not defined"
+  when: SERVICE_NAME is not defined
+
+- name: Validate LOCAL_FILE_PATH is defined
+  ansible.builtin.fail:
+    msg: "Required variable 'LOCAL_FILE_PATH' is not defined"
+  when: LOCAL_FILE_PATH is not defined
+
+- name: Set default variables
+  ansible.builtin.set_fact:
+    remote_install_dir: "{{ REMOTE_INSTALL_DIR | default('/opt/' + SERVICE_NAME) }}"
+    service_user: "{{ ansible_user if (SERVICE_USER | default('root')) == 'ansible_user' else (SERVICE_USER | default('root')) }}"
+    service_args: "{{ SERVICE_ARGS | default('') }}"
+    service_restart: "{{ SERVICE_RESTART | default('on-failure') }}"
+    service_env: "{{ SERVICE_ENV | default([]) }}"
+
+- name: Set working directory
+  ansible.builtin.set_fact:
+    service_working_dir: "{{ SERVICE_WORKING_DIR | default(remote_install_dir) }}"
+
+- name: Create installation directory
+  ansible.builtin.file:
+    path: "{{ remote_install_dir }}"
+    state: directory
+    owner: "{{ service_user }}"
+    mode: '0755'
+  become: yes
+
+- name: Copy executable to remote host
+  ansible.builtin.copy:
+    src: "{{ LOCAL_FILE_PATH }}"
+    dest: "{{ remote_install_dir }}/{{ SERVICE_NAME }}"
+    owner: "{{ service_user }}"
+    mode: '0755'
+  become: yes
+  register: file_copied
+
+- name: Build environment variables string
+  ansible.builtin.set_fact:
+    service_env_lines: "{{ service_env | map('regex_replace', '^(.*)$', 'Environment=\\1') | join('\n') }}"
+  when: service_env | length > 0
+
+- name: Create systemd service file
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ SERVICE_NAME }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description={{ SERVICE_NAME }} service
+      After=network.target
+
+      [Service]
+      Type=simple
+      User={{ service_user }}
+      WorkingDirectory={{ service_working_dir }}
+      ExecStart={{ remote_install_dir }}/{{ SERVICE_NAME }} {{ service_args }}
+      Restart={{ service_restart }}
+      RestartSec=5
+      {{ service_env_lines | default('') }}
+
+      [Install]
+      WantedBy=multi-user.target
+  become: yes
+  register: service_file_created
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  become: yes
+  when: service_file_created.changed
+
+- name: Enable and start the service
+  ansible.builtin.systemd:
+    name: "{{ SERVICE_NAME }}"
+    enabled: yes
+    state: restarted
+  become: yes
+  when: file_copied.changed or service_file_created.changed
+
+- name: Ensure service is running
+  ansible.builtin.systemd:
+    name: "{{ SERVICE_NAME }}"
+    enabled: yes
+    state: started
+  become: yes
+
+- name: Display service status
+  ansible.builtin.debug:
+    msg: "Service '{{ SERVICE_NAME }}' deployed and started on {{ inventory_hostname }}"

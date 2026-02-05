@@ -1,0 +1,81 @@
+name = "Prime Intellect GPU deployment example"
+comment = """
+Example deployment configuration for Prime Intellect GPU cloud.
+
+Before running, ensure:
+1. Set your API token: export PRIME_INTELLECT_API_TOKEN=<your-token>
+2. Replace 'your-team-id-here' with your actual Prime Intellect team ID
+
+Run from the deployment/ directory with:
+  python deploy.py deploy --setup-definition examples/prime-intellect.toml
+"""
+
+# Single GPU worker node
+[nodes.gpu_worker]
+name = "my_gpu_worker"
+os = "ubuntu-22.04"
+
+[nodes.gpu_worker.deployment]
+provider = "prime_intellect"
+
+[nodes.gpu_worker.deployment.config]
+# GPU type to provision
+# Common options: A40_48GB, A100_40GB, A100_80GB, H100_80GB, RTX_4090_24GB
+gpu_type = "A40_48GB"
+
+# Number of GPUs (default: 1)
+gpu_count = 1
+
+# Your Prime Intellect team ID (required)
+team_id = "your-team-id-here"
+
+# Regions to search for availability (optional)
+# Default: ["eu_west", "eu_north", "eu_east", "united_states"]
+regions = ["eu_west", "eu_north", "united_states"]
+
+# OS image prefix to match (optional, default: "ubuntu_22")
+os_prefix = "ubuntu_22"
+
+# Cloud providers to exclude (optional, default: ["runpod"])
+provider_blacklist = ["runpod"]
+
+# Timeout in seconds for waiting for pod to become active (optional, default: 300)
+# provision_timeout = 300
+
+
+# Array of GPU workers example
+[nodes.training_cluster]
+os = "ubuntu-22.04"
+
+[nodes.training_cluster.array]
+count = 3
+name_template = "train_node_{array_name}"
+names = ["node1", "node2", "node3"]
+
+[nodes.training_cluster.deployment]
+provider = "prime_intellect"
+
+[nodes.training_cluster.deployment.config]
+gpu_type = "A100_80GB"
+gpu_count = 1
+team_id = "your-team-id-here"
+regions = ["eu_west", "united_states"]
+os_prefix = "ubuntu_22"
+
+
+# Explicit cloud ID example
+# Use this when you want to provision a specific instance type
+# The cloud_id bypasses gpu_type search and uses the exact instance
+[nodes.specific_instance]
+name = "my_specific_gpu"
+os = "ubuntu-22.04"
+
+[nodes.specific_instance.deployment]
+provider = "prime_intellect"
+
+[nodes.specific_instance.deployment.config]
+# When cloud_id is specified, gpu_type is ignored (can be omitted)
+cloud_id = "your-cloud-id-here"
+gpu_count = 1
+team_id = "your-team-id-here"
+os_prefix = "ubuntu_22"

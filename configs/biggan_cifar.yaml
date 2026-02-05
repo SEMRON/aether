@@ -91,6 +91,7 @@ data:
   dataset_name: "uoft-cs/cifar10"  # Logical dataset name; BigGAN specifics go under biggan: below
   dataset_config: null
   dataset_split: "train"
+  dataset_split_validation: "test"
   num_workers: 0
   precision: "32-true"   # Overall compute precision; BigGAN has its own fp16 flags below
   task_type: "image_gen"
@@ -110,16 +111,23 @@ diloco:
     biggan_model_config: *biggan_config
   outer_optim:
     type: "sgd"
-    sgd_lr: 0.07
-    sgd_momentum: 0.9
-    sgd_nesterov: true
-  inner_steps: 500
-  outer_steps: 100
+    sgd_lr: 0.7
+    sgd_momentum: 0.
+    sgd_nesterov: false
+  inner_steps: 10
+  outer_steps: 1000
   batch_size_per_step: *batch_size
   min_refresh_period: 5.0
   max_refresh_period: 30.0
   averaging_timeout: 60.0
   verbose: true
+
+  min_local_steps: 5
+
+  target_group_size: 4
+  min_group_size: 2
+  min_matchmaking_time: 600.0
+  request_timeout: 120.0
 
 model_pipeline:
   pipeline:
@@ -129,5 +137,16 @@ model_pipeline:
   forward_timeout: 900.0
   backward_timeout: 1800.0
 
+# param_mirror:
+#   enable: true
+#   refresh_every: 60
 
+network:
+  skip_load_from_peers: true
+  skip_load_checkpoints: true
 
+  hivemind_compression: "fp16"
+
+checkpoint_dir: "checkpoints"
+keep_history: true
+checkpoint_update_period: 60

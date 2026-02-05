@@ -1,0 +1,9 @@
+- name: Wait for cloud-init to complete
+  ansible.builtin.command: systemctl is-active cloud-init.target
+  register: cloud_init_status
+  until: cloud_init_status.rc == 0
+  retries: "{{ (INIT_WAIT_TIMEOUT_SECONDS | default(300) | int / 5) | int }}"
+  delay: 5
+  failed_when: cloud_init_status.rc != 0 and ansible_loop.index == ansible_loop.last
+  changed_when: cloud_init_status.rc != 0 and ansible_loop.index == 1
+  when: NO_CLOUD_INIT is not defined

@@ -41,7 +41,7 @@ def discover_experts(dht: DHT, config: Config) -> Tuple[Dict[int, Dict], Dict[in
     # First, discover all stage names from the config
     expected_stages = get_expected_stages(config)
     
-    logger.info(f"Discovering experts with stages: {expected_stages}")
+    logger.debug(f"Discovering experts with stages: {expected_stages}")
     
     # Generate UIDs in the same format as your current method
     max_expert_index = config.max_expert_index
@@ -52,12 +52,12 @@ def discover_experts(dht: DHT, config: Config) -> Tuple[Dict[int, Dict], Dict[in
             uid = f"{stage_name}.0.{expert_index}.0"
             all_uids.append(uid)
     
-    logger.info(f"Querying {len(all_uids)} UIDs")
+    logger.debug(f"Querying {len(all_uids)} UIDs")
     
     # Use the dht_handler.get_experts function
     try:
         remote_experts = get_experts(dht, all_uids)
-        logger.info(f"dht_handler.get_experts returned {len(remote_experts)} results")
+        logger.debug(f"dht_handler.get_experts returned {len(remote_experts)} results")
         
         # Process results similar to your current method
         available_experts = {}  # expert_index -> {stage_name: expert_info}
@@ -68,7 +68,7 @@ def discover_experts(dht: DHT, config: Config) -> Tuple[Dict[int, Dict], Dict[in
                 stage_name, _, expert_index, _ = uid.split(".")
                 expert_index = int(expert_index)
                 
-                logger.info(f"Found expert {uid} at {remote_expert.endpoint}")
+                logger.debug(f"Found expert {uid} at {remote_expert.endpoint}")
                 
                 # Retrieve batch_size_per_step for this expert
                 batch_size = get_expert_batch_size(dht, uid, latest=True)
@@ -90,16 +90,16 @@ def discover_experts(dht: DHT, config: Config) -> Tuple[Dict[int, Dict], Dict[in
         for expert_index, stages in available_experts.items():
             if all(stage in stages for stage in expected_stages):
                 complete_pipelines[expert_index] = stages
-                logger.info(f"Complete pipeline found for expert_index {expert_index}: {list(stages.keys())}")
+                logger.debug(f"Complete pipeline found for expert_index {expert_index}: {list(stages.keys())}")
             else:
                 missing_stages = [stage for stage in expected_stages if stage not in stages]
                 incomplete_pipelines[expert_index] = {
                     'stages': stages,
                     'missing_stages': missing_stages
                 }
-                logger.info(f"Incomplete pipeline for expert_index {expert_index}: missing {missing_stages}")
+                logger.debug(f"Incomplete pipeline for expert_index {expert_index}: missing {missing_stages}")
         
-        logger.info(f"Found {len(complete_pipelines)} complete and {len(incomplete_pipelines)} incomplete pipelines")
+        logger.debug(f"Found {len(complete_pipelines)} complete and {len(incomplete_pipelines)} incomplete pipelines")
         
         return complete_pipelines, incomplete_pipelines
         
@@ -129,10 +129,10 @@ def discover_pipeline_gaps(dht: DHT, cfg: Config) -> Tuple[Optional[int], Option
             for stage_name in expected_stages:
                 if stage_name in missing_stages:
                     stage_index = expected_stages.index(stage_name)
-                    logger.info(f"Will create stage {stage_index} ({stage_name}) for expert {expert_index}")
+                    logger.debug(f"Will create stage {stage_index} ({stage_name}) for expert {expert_index}")
                     return expert_index, stage_index
     
-    logger.info("No incomplete pipelines found")
+    logger.debug("No incomplete pipelines found")
     return None, None
 
 
@@ -156,15 +156,15 @@ def find_next_expert_index(cfg: Config, dht: DHT) -> int:
         for stage_name in expected_stages:
             uid = f"{stage_name}.0.{expert_index}.0"
             response = dht.get(uid, latest=True)
-            logger.info(f"Checking expert {expert_index} for stage {stage_name}: {response}")
+            logger.debug(f"Checking expert {expert_index} for stage {stage_name}: {response}")
             if response is not None:
-                logger.info(f"Expert {expert_index} for stage {stage_name} exists: {response}")
+                logger.debug(f"Expert {expert_index} for stage {stage_name} exists: {response}")
                 has_any_stage = True
                 break
         
-        logger.info(f"Has any stage: {has_any_stage}")
+        logger.debug(f"Has any stage: {has_any_stage}")
         if has_any_stage:
-            logger.info(f"Max expert index: {expert_index}")
+            logger.debug(f"Max expert index: {expert_index}")
             max_expert_index = expert_index
         else:
             # No stages found for this expert_index, we can use it
@@ -172,7 +172,7 @@ def find_next_expert_index(cfg: Config, dht: DHT) -> int:
     
  
     next_expert_index = max_expert_index + 1
-    logger.info(f"Next available expert index: {next_expert_index}")
+    logger.debug(f"Next available expert index: {next_expert_index}")
     return next_expert_index
 
 
@@ -219,6 +219,6 @@ def generate_expert_and_stage_idx(dht: DHT, cfg: Config) -> Tuple[int, int]:
     if expert_index is None or stage_index is None:
         expert_index = get_random_expert_index(dht, cfg, max_attempts=100)
         stage_index = 0
-    logger.info(f"Generated expert index: {expert_index} and stage index: {stage_index}")
+    logger.debug(f"Generated expert index: {expert_index} and stage index: {stage_index}")
     return expert_index, stage_index
     

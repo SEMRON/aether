@@ -1,0 +1,201 @@
+# site.yml
+- name: Unified distqat + gcn setup (monitor first, then workers)
+  hosts: all
+  gather_facts: true
+
+  vars:
+    # -------------------------
+    # Inventory / groups
+    # -------------------------
+    monitor_group_name: "monitor"
+    worker_group_names: "cpu_node"
+
+    eval_group_name: "eval_node"
+
+    # -------------------------
+    # Repo / install
+    # -------------------------
+    github_pat: "{{ lookup('env', 'GITHUB_PAT') }}"
+    repo_url: "https://{{ github_pat }}@github.com/SEMRON/distqat.git"
+    # ERROR IS HERE:
+    # The warning from Ansible is: 
+    # "Use `ansible_facts["fact_name"]` (no `ansible_` prefix) instead.".
+    # The usage of "{{ ansible_env.HOME }}" is deprecated.
+    # The correct way is "{{ ansible_facts['env']['HOME'] }}" (or, for Ansible >=2.8, "{{ ansible_facts.env.HOME }}")
+    repo_dest: "{{ ansible_facts['env']['HOME'] }}/distqat"
+
+    # -------------------------
+    # uv / python
+    # -------------------------
+    uv_bin: "/snap/bin/uv"
+    python_version: "3.10"
+
+    # -------------------------
+    # Tokens (prefer --extra-vars or Vault)
+    # -------------------------
+    wandb_api_key: "{{ lookup('env', 'WANDB_API_KEY') }}"
+    hf_token: "{{ lookup('env', 'HF_TOKEN') }}"
+
+    # -------------------------
+    # Model / network selection (parameterized)
+    # -------------------------
+    gcn_network_type: "gcn"
+    gcn_config_path: "configs/{{ gcn_network_type }}.yaml"
+
+    # -------------------------
+    # Paths / files
+    # -------------------------
+    gcn_logs_dir: "{{ repo_dest }}/logs/gcn" # important, has to match config file
+    initial_peers_filename: "initial_peers.txt"
+
+    # -------------------------
+     # Services
+    # -------------------------
+    trainer_client_service_name: "gcn-trainer-client"
+    trainer_client_exec: "{{ repo_dest }}/.venv/bin/python start_trainer_client.py --config-path {{ gcn_config_path }}"
+
+    # -------------------------
+    # Systemd environment injection (visible to services)
+    # -------------------------
+    systemd_env_dir: "/etc/default"
+    systemd_env_file: "{{ systemd_env_dir }}/distqat.env"
+
+    # -------------------------
+    # Python extras per role
+    # -------------------------
+    worker_extras: "gpuspecific"     # workers install: -e .[gpuspecific]
+
+
+  tasks:
+    - name: Compute role membership and monitor host
+      ansible.builtin.set_fact:
+        is_monitor: "{{ inventory_hostname in (groups[monitor_group_name] | default([])) }}"
+        is_worker: "{{ inventory_hostname in ((groups['gpu_node_rtx6000'] | default([])) + (groups['gpu_node_a6000'] | default([])) + (groups['gpu_node_a100'] | default([])) + (groups['gpu_node_l40s'] | default([]))) }}"
+        is_eval: "{{ inventory_hostname in (groups[eval_group_name] | default([])) }}"
+        monitor_host: "{{ (groups[monitor_group_name] | default([])) | first }}"
+        initial_peers_remote_path: "{{ gcn_logs_dir }}/{{ initial_peers_filename }}"
+        initial_peers_local_tmp: "/tmp/pahrendt_{{ initial_peers_filename }}_{{gcn_network_type}}.from_monitor"
+
+    # -------------------------
+    # Common: base packages + repo + venv
+    # -------------------------
+    - name: Clean apt cache and force refresh (Ubuntu)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+        apt-get update
+      args:
+        executable: /bin/bash
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+      retries: 3
+      delay: 5
+      register: apt_update_result
+      until: apt_update_result.rc == 0
+      async: 300
+      poll: 10
+
+    - name: Install required packages (Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3
+          - python3-pip
+          - libpython3-dev
+          - libopenmpi-dev
+          - ffmpeg
+        state: present
+        update_cache: no
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+      retries: 3
+      delay: 10
+      register: apt_install_result
+      until: apt_install_result is success
+      async: 600
+      poll: 15
+
+    - name: Install astral-uv with snap (Ubuntu)
+      community.general.snap:
+        name: astral-uv
+        state: present
+        classic: true
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+
+    - name: Clone distqat git repo
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        clone: yes
+        update: yes
+        version: master
+        force: yes
+      become: false
+
+    - name: Create Python venv using uv
+      ansible.builtin.shell: |
+        set -euo pipefail
+        "{{ uv_bin }}" venv --python={{ python_version }}
+      args:
+        chdir: "{{ repo_dest }}"
+        creates: "{{ repo_dest }}/.venv"
+        executable: /bin/bash
+      become: false
+
+    - name: Ensure managed section is present in pyproject.toml (idempotent)
+      ansible.builtin.blockinfile:
+        path: "{{ repo_dest }}/pyproject.toml"
+        block: |
+          [[tool.uv.index]]
+          name = "pytorch_cpu"
+          url = "https://download.pytorch.org/whl/cpu"
+          explicit = true
+
+          [tool.uv.sources]
+          torch = { index = "pytorch_cpu" }
+          torchvision = { index = "pytorch_cpu" }
+          torchaudio = { index = "pytorch_cpu" }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - aether auto setup"
+        insertafter: EOF
+        create: no
+      become: false
+
+    - name: Check if torchcodec is installed
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        python -c "import torchcodec" 2>/dev/null
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      register: torchcodec_check
+      failed_when: false
+      changed_when: false
+      become: false
+
+    - name: Install torchcodec using uv pip
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        "{{ uv_bin }}" pip install torchcodec
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+      when: torchcodec_check.rc != 0
+
+    # -------------------------
+    # Role-specific editable install
+    # -------------------------
+    - name: Install project extras for workers
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        "{{ uv_bin }}" pip install -e .[{{ worker_extras }}]
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+

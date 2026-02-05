@@ -1,0 +1,159 @@
+name = "All variant example deployment"
+comment = """
+This example tries to containe each variant at least once.
+For both testing, and self-documenting purposes.
+"""
+
+[deployment_master]
+git_https_server_port = 4443
+address = "localhost"
+
+
+# nodes.<type_name>
+[nodes.cpu_system1]
+
+# optional, if not set, and not an array type, set to type_name
+name = "amd_cpu_system"
+# optional, the address may not be known before deployment
+# should not be present for array systems
+address = "192.168.0.12"
+
+# mandatory, used to inform which setup routine to run
+os = "ubuntu-24.04"
+
+# in this case, cpu_system1 is the type_name
+[nodes.cpu_system1.array]
+
+# optional, python format string for setting the system name
+# if not present, inferred as "{famiy_name}_{array_name}
+name_template = "amd_cpu_system_{array_name}"
+
+# number of systems in this array
+count = 4
+
+# optional, list of names for systems, if not present "1", "2", .. "{count}"
+# length must match count
+names = ["bart", "lisa", "maggie", "homer"]
+
+# optional, addresses
+# addresses = ["192.168.0.12", "192.168.0.13", "192.168.0.14", "192.168.0.15"]
+
+# optional
+[nodes.cpu_system1.deployment]
+
+# mandadory, one of:
+#  libvirt
+#  hetzner
+#  aws
+provider = "libvirt"
+
+# mandatory, provider specific dictionary
+[nodes.cpu_system1.deployment.config]
+
+# mandatory, a path to the image location to boot off of
+# may be absolute, or relative
+image = "noble-server-cloudimg-amd64.img"
+
+# mandatory, string (or stringified int) to pass as the ram argument
+ram = 2048
+
+# mandatory, vcpus (int)
+vcpus = 1
+
+# mandatory, string for os-variant
+os-variant = "ubuntunoble"
+
+# mandatory, string for network config
+network = "network=default"
+
+# optional, list of extra arguments
+extraopts = ["--noautoconsole"]
+
+
+## here some different variants for testing, but not described as much
+
+[nodes.smallvm]
+array = { count = 2 }
+os = "ubuntu-24.04"
+[nodes.smallvm.deployment]
+provider = "libvirt"
+[nodes.smallvm.deployment.config]
+image = "noble-server-cloudimg-amd64.img"
+ram = 2048
+vcpus = 1
+os-variant = "ubuntunoble"
+network = "network=default"
+
+
+## Prime Intellect GPU cloud example
+
+[nodes.gpu_worker]
+array = { count = 2, name_template = "gpu_worker_{array_name}", names = ["alpha", "beta"] }
+os = "ubuntu-22.04"
+
+[nodes.gpu_worker.deployment]
+provider = "prime_intellect"
+
+[nodes.gpu_worker.deployment.config]
+# mandatory, GPU type to provision (e.g., A40_48GB, H100_80GB, etc.)
+gpu_type = "A40_48GB"
+
+# optional, number of GPUs per node (default: 1)
+gpu_count = 1
+
+# mandatory, your Prime Intellect team ID
+team_id = "your-team-id-here"
+
+# optional, list of regions to search for availability
+# default: ["eu_west", "eu_north", "eu_east", "united_states"]
+regions = ["eu_west", "eu_north", "united_states"]
+
+# optional, OS image prefix to match (default: "ubuntu_22")
+os_prefix = "ubuntu_22"
+
+# optional, list of cloud providers to exclude (default: ["runpod"])
+provider_blacklist = ["runpod"]
+
+# optional, timeout in seconds for waiting for pod to become active (default: 300)
+# provision_timeout = 300
+
+# optional, disk size in GB
+# disk_size = 100
+
+# optional, environment variables to set on the pod
+# [nodes.gpu_worker.deployment.config.env_vars]
+# MY_VAR = "my_value"
+
+
+## Single GPU node example (non-array)
+
+[nodes.inference_server]
+name = "inference_server_prod"
+os = "ubuntu-22.04"
+
+[nodes.inference_server.deployment]
+provider = "prime_intellect"
+
+[nodes.inference_server.deployment.config]
+gpu_type = "H100_80GB"
+gpu_count = 1
+team_id = "your-team-id-here"
+
+
+## Explicit cloud ID example
+## Use this when you want to provision a specific instance type
+## The cloud_id bypasses gpu_type search and uses the exact instance
+
+[nodes.specific_instance]
+name = "my_specific_gpu"
+os = "ubuntu-22.04"
+
+[nodes.specific_instance.deployment]
+provider = "prime_intellect"
+
+[nodes.specific_instance.deployment.config]
+# When cloud_id is specified, gpu_type is ignored (can be omitted)
+cloud_id = "your-cloud-id-here"
+gpu_count = 1
+team_id = "your-team-id-here"
+os_prefix = "ubuntu_22"

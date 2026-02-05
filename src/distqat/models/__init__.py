@@ -8,6 +8,8 @@ from .resnet import (
     Resnet18Front, 
     Resnet18Back,
     ResNet50Full,
+    Resnet50Head,
+    Resnet50Tail,
     ResNet101Full,
 )
 from .mlp import MLP, MLPFront, MLPBack
@@ -20,6 +22,9 @@ from .distilgpt2 import (
 from .gpt_neo import GPTNeoFull, GPTNeoHeadExpert, GPTNeoBodyExpert, GPTNeoTailExpert
 from .wav2vec2 import Wav2Vec2Full, Wav2Vec2Head, Wav2Vec2Body, Wav2Vec2Tail
 from .biggan.biggan_adapter import BigGANAdapter
+from .gcn import GCN
+from .ppo import PPOAgent
+
 
 MODEL_TYPES: Dict[str, Type[Any]] = {
     "mlp": MLP,
@@ -29,6 +34,8 @@ MODEL_TYPES: Dict[str, Type[Any]] = {
     "resnet18.head": Resnet18Front,
     "resnet18.tail": Resnet18Back,
     "resnet50.full": ResNet50Full,
+    "resnet50.head": Resnet50Head,
+    "resnet50.tail": Resnet50Tail,
     "resnet101.full": ResNet101Full,
     "distilgpt2.full": DistilGPT2Full,
     "distilgpt2.head": DistilGPT2Head,
@@ -37,12 +44,15 @@ MODEL_TYPES: Dict[str, Type[Any]] = {
     "gptneo.full": GPTNeoFull,
     "gptneo.head": GPTNeoHeadExpert,
     "gptneo.body": GPTNeoBodyExpert,
+    "gptneo.body_2": GPTNeoBodyExpert,
     "gptneo.tail": GPTNeoTailExpert,
     "wav2vec2.full": Wav2Vec2Full,
     "wav2vec2.head": Wav2Vec2Head,
     "wav2vec2.body": Wav2Vec2Body,
     "wav2vec2.tail": Wav2Vec2Tail,
     "biggan.full": BigGANAdapter,
+    "gcn.full": GCN,
+    "ppo.full": PPOAgent,
 }
 
 

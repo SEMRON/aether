@@ -7,14 +7,17 @@ from distqat.distributed.optim.collaborative import CollaborativeOptimizer
 from distqat.distributed.optim.diloco import DiLoCoOptimizer
 from distqat.config import OptimConfig, DilocoConfig
 from distqat.models.biggan.biggan_adapter import InnerGANOptimizer
+OptimizerFactory = Callable[..., torch.optim.Optimizer]
 
-def get_optimizer_factory(config: OptimConfig) -> Callable[[Iterable[torch.nn.Parameter]], torch.optim.Optimizer]:
+
+def get_optimizer_factory(config: OptimConfig) -> OptimizerFactory:
     if config.type == "adam":
         return lambda *args,**kwargs: torch.optim.AdamW(
             *args, **kwargs,
             lr=config.adam_lr,
             weight_decay=config.adam_weight_decay,
             betas=(config.adam_betas1, config.adam_betas2),
+            eps=config.adam_epsilon,
         )
     elif config.type == "sgd":
         return lambda *args, **kwargs: torch.optim.SGD(
@@ -52,6 +55,17 @@ def get_optimizer_factory(config: OptimConfig) -> Callable[[Iterable[torch.nn.Pa
     else:
         raise ValueError(f"Optimizer {config.type} not found")
 
+
+def get_regular_optimizer_factory(config: DilocoConfig) -> OptimizerFactory:
+    """
+    Create a *regular* (non-DiLoCo) optimizer factory.
+
+    This intentionally uses only the DiLoCo config's `inner_optim` section as a standalone optimizer,
+    i.e. it does not wrap it in DiLoCo's inner/outer collaborative logic.
+    """
+    return get_optimizer_factory(config.inner_optim)
+
+
 def get_collaborative_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[Type[TorchOptimizer], dict]:
     return CollaborativeOptimizer, dict(
         run_id=run_id,
@@ -69,17 +83,25 @@ def get_collaborative_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) ->
         averaging_timeout=config.averaging_timeout,
         load_state_timeout=config.load_state_timeout,
         verbose=config.verbose,
+        target_group_size=config.target_group_size,
+        min_group_size=config.min_group_size,
+        min_matchmaking_time=config.min_matchmaking_time,
+        request_timeout=config.request_timeout,
     )
 
-def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[Type[TorchOptimizer], dict]:
+def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig, compression: dict) -> Tuple[Type[TorchOptimizer], dict]:
     return DiLoCoOptimizer, dict(
         run_id=run_id,
         start=True,
         outer_optimizer=get_optimizer_factory(config.outer_optim),
         inner_optimizer=get_optimizer_factory(config.inner_optim),
+        scheduler=config.scheduler,
+        num_warmup_steps=config.num_warmup_steps,
+        num_total_steps=config.inner_steps * config.outer_steps,
         num_inner_steps=config.inner_steps,
         batch_size_per_step=config.batch_size_per_step,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
+        min_local_steps=config.min_local_steps,
         min_refresh_period=config.min_refresh_period,
         max_refresh_period=config.max_refresh_period,
         default_refresh_period=config.default_refresh_period,
@@ -90,4 +112,35 @@ def get_diloco_optimizer_cls_kwargs(run_id: int, config: DilocoConfig) -> Tuple[
         averaging_timeout=config.averaging_timeout,
         load_state_timeout=config.load_state_timeout,
         verbose=config.verbose,
+        compression=compression["state_averaging_compression"],
+        state_compression=compression["state_compression"],
+        target_group_size=config.target_group_size,
+        min_group_size=config.min_group_size,
+        min_matchmaking_time=config.min_matchmaking_time,
+        request_timeout=config.request_timeout,
+    )
+
+def get_regular_optimizer_cls_kwargs(config: OptimConfig) -> Tuple[Type[TorchOptimizer], dict]:
+    """
+    Return a torch optimizer class + kwargs for a *plain* (non-DiLoCo) optimizer.
+
+    Note: for optimizers that require custom construction (e.g. BigGAN's InnerGANOptimizer),
+    use `get_optimizer_factory()` / `get_regular_optimizer_factory()` instead.
+    """
+    if config.type == "adam":
+        return torch.optim.AdamW, dict(
+            lr=config.adam_lr,
+            weight_decay=config.adam_weight_decay,
+            betas=(config.adam_betas1, config.adam_betas2),
+            eps=config.adam_epsilon,
+        )
+    if config.type == "sgd":
+        return torch.optim.SGD, dict(
+            lr=config.sgd_lr,
+            momentum=config.sgd_momentum,
+            nesterov=config.sgd_nesterov,
+        )
+    raise ValueError(
+        f"Regular optimizer class/kwargs are not supported for optimizer type={config.type!r}. "
+        f"Use get_optimizer_factory() instead."
     )

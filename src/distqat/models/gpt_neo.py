@@ -2,9 +2,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 import torch
 import torch.nn as nn
 from hivemind.moe.server.layers.custom_experts import register_expert_class
-from pydantic_yaml import parse_yaml_file_as
-from distqat.config import Config
-
+import torch.nn.functional as F
 
 
 head_sample_input = lambda batch_size, seq_len: (
@@ -17,6 +15,12 @@ body_sample_input = lambda batch_size, hid_dim, seq_len: (
 
 tail_sample_input = lambda batch_size, hid_dim, seq_len: (
     torch.empty((batch_size, seq_len, hid_dim)),
+    torch.randint(low=0, high=1000, size=(batch_size, seq_len), dtype=torch.long),
+)
+
+full_sample_input = lambda batch_size, seq_len: (
+    torch.randint(low=0, high=1000, size=(batch_size, seq_len), dtype=torch.long),
+    torch.randint(low=0, high=1000, size=(batch_size, seq_len), dtype=torch.long),
 )
 
 class GPTNeo(nn.Module):
@@ -25,28 +29,30 @@ class GPTNeo(nn.Module):
         config = AutoConfig.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_config(config)
         
-    def forward(self, x):
-        logits = self.model(input_ids=x, return_dict=False)[0]
-        return logits
+    def forward(self, x, labels: torch.Tensor):
+        # HuggingFace returns a scalar loss (shape []) averaged over batch+tokens.
+        # Hivemind experts require all outputs to be tensors with batch dimension 0.
+        loss = self.model(input_ids=x, labels=labels).loss  # scalar
+        if loss.dim() == 0:
+            loss = loss.expand(x.size(0))  # shape [B]
+        return loss
 
 # ---------- Full: full model ----------
 # @register_expert_class("gptneo.full", lambda batch_size, hid_dim: torch.empty((batch_size, 128), dtype=torch.long))
-@register_expert_class("gptneo.full", head_sample_input)
+@register_expert_class("gptneo.full", full_sample_input)
 class GPTNeoFull(nn.Module):
     def __init__(self, full_model_name: str):
         super(GPTNeoFull, self).__init__()
         self.model = GPTNeo(full_model_name)
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, x, labels: torch.Tensor):
+        return self.model(x, labels)
 
 # ---------- Head: embeddings + first L_head blocks ----------
 @register_expert_class("gptneo.head", head_sample_input)
 class GPTNeoHeadExpert(nn.Module):
     def __init__(self, full_model_name: str, hid_dim: int, n_layers: int = 8):
         super().__init__()
-        print(hid_dim)
-        print(n_layers)
         self.n_layers = n_layers
         cfg = AutoConfig.from_pretrained(full_model_name)
 
@@ -67,8 +73,25 @@ class GPTNeoHeadExpert(nn.Module):
             hidden = blk(hidden, attention_mask=None)[0]
         return hidden
 
+
 # ---------- Body: next L_body blocks ----------
 @register_expert_class("gptneo.body", body_sample_input)
+class GPTNeoBodyExpert(nn.Module):
+    def __init__(self, full_model_name: str, hid_dim: int, n_layers: int = 8, idx: int = 8):
+        super().__init__()
+        self.n_layers, self.idx = n_layers, idx
+        cfg = AutoConfig.from_pretrained(full_model_name)
+        full = AutoModelForCausalLM.from_config(cfg)
+        tr = full.transformer
+        self.blocks = nn.ModuleList(tr.h[idx:idx + n_layers])
+
+    def forward(self, hidden_states: torch.Tensor):
+        for blk in self.blocks:
+            hidden_states = blk(hidden_states, attention_mask=None)[0]
+        return hidden_states
+
+# ---------- Body: next L_body blocks ----------
+@register_expert_class("gptneo.body_2", body_sample_input)
 class GPTNeoBodyExpert(nn.Module):
     def __init__(self, full_model_name: str, hid_dim: int, n_layers: int = 8, idx: int = 8):
         super().__init__()
@@ -96,9 +119,19 @@ class GPTNeoTailExpert(nn.Module):
         self.ln_f = tr.ln_f
         self.lm_head = full.lm_head
 
-    def forward(self, hidden_states: torch.Tensor):
+    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor):
         for blk in self.blocks:
             hidden_states = blk(hidden_states, attention_mask=None)[0]
         hidden_states = self.ln_f(hidden_states)
         logits = self.lm_head(hidden_states)
-        return logits
+
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+
+        loss = F.cross_entropy(
+            shift_logits.float().permute(0, 2, 1),
+            shift_labels.to(shift_logits.device),
+            reduction="none",
+        )
+
+        return loss

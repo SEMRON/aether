@@ -59,7 +59,7 @@ class Generator(nn.Module):
                G_activation=nn.ReLU(inplace=False),
                G_lr=5e-5, G_B1=0.0, G_B2=0.999, adam_eps=1e-8,
                BN_eps=1e-5, SN_eps=1e-12, G_mixed_precision=False, G_fp16=False,
-               G_init='ortho', skip_init=False, no_optim=False,
+               G_bf16=False, G_init='ortho', skip_init=False, no_optim=False,
                G_param='SN', norm_style='bn',
                **kwargs):
     super(Generator, self).__init__()
@@ -101,6 +101,8 @@ class Generator(nn.Module):
     self.SN_eps = SN_eps
     # fp16?
     self.fp16 = G_fp16
+    # bf16?
+    self.bf16 = G_bf16
     # Architecture dict
     self.arch = G_arch(self.ch, self.attention)[resolution]
 
@@ -286,7 +288,7 @@ class Discriminator(nn.Module):
                num_D_SVs=1, num_D_SV_itrs=1, D_activation=nn.ReLU(inplace=False),
                D_lr=2e-4, D_B1=0.0, D_B2=0.999, adam_eps=1e-8,
                SN_eps=1e-12, output_dim=1, D_mixed_precision=False, D_fp16=False,
-               D_init='ortho', skip_init=False, D_param='SN', **kwargs):
+               D_bf16=False, D_init='ortho', skip_init=False, D_param='SN', **kwargs):
     super(Discriminator, self).__init__()
     # Width multiplier
     self.ch = D_ch
@@ -310,6 +312,8 @@ class Discriminator(nn.Module):
     self.SN_eps = SN_eps
     # Fp16?
     self.fp16 = D_fp16
+    # Bf16?
+    self.bf16 = D_bf16
     # Architecture
     self.arch = D_arch(self.ch, self.attention)[resolution]
 
@@ -416,11 +420,24 @@ class G_D(nn.Module):
     with torch.set_grad_enabled(train_G):
       # Get Generator output given noise
       G_z = self.G(z, self.G.shared(gy))
-      # Cast as necessary
-      if self.G.fp16 and not self.D.fp16:
+      # Cast as necessary between G and D precision
+      # Determine G's effective precision
+      G_uses_reduced = self.G.fp16 or self.G.bf16
+      D_uses_reduced = self.D.fp16 or self.D.bf16
+      
+      if G_uses_reduced and not D_uses_reduced:
         G_z = G_z.float()
-      if self.D.fp16 and not self.G.fp16:
-        G_z = G_z.half()
+      elif D_uses_reduced and not G_uses_reduced:
+        if self.D.bf16:
+          G_z = G_z.to(torch.bfloat16)
+        else:
+          G_z = G_z.half()
+      # If both use reduced precision but different types, cast to D's type
+      elif G_uses_reduced and D_uses_reduced:
+        if self.G.bf16 and self.D.fp16:
+          G_z = G_z.half()
+        elif self.G.fp16 and self.D.bf16:
+          G_z = G_z.to(torch.bfloat16)
     # Split_D means to run D once with real data and once with fake,
     # rather than concatenating along the batch dimension.
     if split_D:

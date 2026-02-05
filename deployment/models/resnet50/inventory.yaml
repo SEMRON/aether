@@ -1,0 +1,252 @@
+9fd0fd1a_71c4_4e04_88a5_82c42aaf1374:
+  hosts:
+    resnet50-test1-eval:
+      ansible_host: 154.54.100.100
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100_Addendum_1
+        cloud_provider: dc_gnu
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 706bea819cea4f06b141d2bf783f79be
+        provider: prime_intellect
+    resnet50-test1-monitor:
+      ansible_host: 204.12.163.10
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: cpu-d3_4vcpu-16gb
+        cloud_provider: nebius
+        gpu_count: 1
+        gpu_type: CPU_NODE
+        pod_id: 2b488fcaea42423b9306ed5dfd743c81
+        provider: prime_intellect
+    resnet50-test1_1:
+      ansible_host: 154.54.100.109
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100_Addendum_1
+        cloud_provider: dc_gnu
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 7fc103dbb4894de785b074d9794fb8f4
+        provider: prime_intellect
+    resnet50-test1_10:
+      ansible_host: 216.81.248.132
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100
+        cloud_provider: massedcompute
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: d15909dc205c49b4a1d16e833d4abec9
+        provider: prime_intellect
+    resnet50-test1_11:
+      ansible_host: 216.81.248.136
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100
+        cloud_provider: massedcompute
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 8efc4ee2cc4b447a914a36571d3b18a9
+        provider: prime_intellect
+    resnet50-test1_12:
+      ansible_host: 216.81.248.146
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100
+        cloud_provider: massedcompute
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 2ce32c7746344194b236b5d61f327267
+        provider: prime_intellect
+    resnet50-test1_13:
+      ansible_host: 216.81.248.170
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100
+        cloud_provider: massedcompute
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 23c9d75fd35e491bb4c78e4f62788288
+        provider: prime_intellect
+    resnet50-test1_14:
+      ansible_host: 160.211.45.231
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: a100-80gb.1x
+        cloud_provider: crusoecloud
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 20f07d6661fb4fe7ae0136f3d3831a3b
+        provider: prime_intellect
+    resnet50-test1_15:
+      ansible_host: 160.211.46.88
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: a100-80gb.1x
+        cloud_provider: crusoecloud
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 9608de595a5b49c49630b9b75adf445f
+        provider: prime_intellect
+    resnet50-test1_16:
+      ansible_host: 160.211.46.99
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: a100-80gb.1x
+        cloud_provider: crusoecloud
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: ea08b3d25bc54feea58cd33d68538e92
+        provider: prime_intellect
+    resnet50-test1_2:
+      ansible_host: 154.54.100.110
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100_Addendum_1
+        cloud_provider: dc_gnu
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 321d7183183d48aab3f4423c34cb9198
+        provider: prime_intellect
+    resnet50-test1_3:
+      ansible_host: 154.54.100.119
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100_Addendum_1
+        cloud_provider: dc_gnu
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 33b465f6f27745b2a99e38a960448f0c
+        provider: prime_intellect
+    resnet50-test1_4:
+      ansible_host: 154.54.100.122
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100_Addendum_1
+        cloud_provider: dc_gnu
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 5caebc5cd3a84978bcf552da14295547
+        provider: prime_intellect
+    resnet50-test1_5:
+      ansible_host: 154.54.100.127
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100_Addendum_1
+        cloud_provider: dc_gnu
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 9ffbc8030839436192884787466bfc89
+        provider: prime_intellect
+    resnet50-test1_6:
+      ansible_host: 154.54.100.129
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_DGX_A100_Addendum_1
+        cloud_provider: dc_gnu
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 8ffa796e07114bb1a80f2c4261435a33
+        provider: prime_intellect
+    resnet50-test1_7:
+      ansible_host: 216.81.248.22
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_a100
+        cloud_provider: massedcompute
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: d16653e86e6543e8aa54365255221092
+        provider: prime_intellect
+    resnet50-test1_8:
+      ansible_host: 216.81.248.71
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_a100
+        cloud_provider: massedcompute
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: a0af25d463fd4a618e83195e5c4199aa
+        provider: prime_intellect
+    resnet50-test1_9:
+      ansible_host: 216.81.248.82
+      ansible_port: 22
+      ansible_user: ubuntu
+      vars:
+        cloud_id: gpu_1x_a100
+        cloud_provider: massedcompute
+        gpu_count: 1
+        gpu_type: A100_80GB
+        pod_id: 79c3af63c0484bcaa3a41a483a4c119d
+        provider: prime_intellect
+  vars:
+    deployment_group_guid: 9fd0fd1a-71c4-4e04-88a5-82c42aaf1374
+all:
+  hosts:
+    resnet50-test1-eval: {}
+    resnet50-test1-monitor: {}
+    resnet50-test1_1: {}
+    resnet50-test1_10: {}
+    resnet50-test1_11: {}
+    resnet50-test1_12: {}
+    resnet50-test1_13: {}
+    resnet50-test1_14: {}
+    resnet50-test1_15: {}
+    resnet50-test1_16: {}
+    resnet50-test1_2: {}
+    resnet50-test1_3: {}
+    resnet50-test1_4: {}
+    resnet50-test1_5: {}
+    resnet50-test1_6: {}
+    resnet50-test1_7: {}
+    resnet50-test1_8: {}
+    resnet50-test1_9: {}
+eval_node:
+  hosts:
+    resnet50-test1-eval: {}
+gpu_node_a100:
+  hosts:
+    resnet50-test1_1: {}
+    resnet50-test1_10: {}
+    resnet50-test1_11: {}
+    resnet50-test1_12: {}
+    resnet50-test1_13: {}
+    resnet50-test1_14: {}
+    resnet50-test1_15: {}
+    resnet50-test1_16: {}
+    resnet50-test1_2: {}
+    resnet50-test1_3: {}
+    resnet50-test1_4: {}
+    resnet50-test1_5: {}
+    resnet50-test1_6: {}
+    resnet50-test1_7: {}
+    resnet50-test1_8: {}
+    resnet50-test1_9: {}
+gpu_node_a6000:
+  hosts: {}
+gpu_node_l40s:
+  hosts: {}
+gpu_node_rtx6000:
+  hosts: {}
+monitor:
+  hosts:
+    resnet50-test1-monitor: {}

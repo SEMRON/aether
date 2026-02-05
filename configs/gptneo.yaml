@@ -16,7 +16,7 @@ data:
 
 
   num_workers: 0
-  precision: "32-true"
+  precision: "bf16-mixed"
   seq_len: 2048
   task_type: "llm"
   full_model_name: "EleutherAI/gpt-neo-1.3B"
@@ -34,8 +34,8 @@ diloco:
     sgd_nesterov: True
   inner_steps: 500
   outer_steps: 100
-  batch_size_per_step: 6
-  gradient_accumulation_steps: 86
+  batch_size_per_step: 2
+  gradient_accumulation_steps: 256
   min_refresh_period: 5.0
   max_refresh_period: 30.0
   averaging_timeout: 60.0

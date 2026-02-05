@@ -1,0 +1,85 @@
+wandb_project: "distqat"
+experiment_prefix: "ppo"
+
+data:
+  dataset_name: "HalfCheetah-v5"
+  dataset_split: "train"
+  task_type: "rl"
+  num_workers: 0
+  precision: "32-true"
+
+ppo:
+  num_steps: 512
+  update_epochs: 20
+  num_minibatches: 32
+  minibatch_size: 4096
+  total_timesteps: 1000000
+  gamma: 0.99
+  lam: 0.95
+  clip_coef: 0.1
+  ent_coef: 4e-4
+  num_envs: 16
+  gae_lambda: 0.92
+  vf_coef: 0.5
+
+
+diloco:
+  inner_optim:
+    type: "adam"
+    adam_lr: 2e-5
+    adam_weight_decay: 0
+    adam_epsilon: 1e-5
+    adam_betas1: 0.9
+    adam_betas2: 0.99
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.07
+    sgd_momentum: 0.9
+    sgd_nesterov: True
+  inner_steps: 1e6
+  outer_steps: 1
+  max_grad_norm: 0.8
+  batch_size_per_step: 4096
+  min_refresh_period: 5.0
+  max_refresh_period: 30.0
+  verbose: true
+  gradient_accumulation_steps: 1
+
+  metadata_expiration: 900.0
+  averaging_timeout: 120.0
+  target_group_size: 4
+  min_group_size: 2
+  min_matchmaking_time: 60.0
+  request_timeout: 3.0
+
+
+
+model_pipeline:
+  pipeline:
+    - model_name: "ppo.full"
+      in_dim: 17
+      action_dim: 6
+  forward_timeout: 120.0
+  backward_timeout: 240.0
+
+
+network:
+  expert_dht_update_period: 30.0
+  expert_dht_expiration: 900.0
+  metrics_expiration: 900.0
+
+  monitor_port: 50010
+  client_port: 51010
+  trainer_base_port: 50110 
+  server_base_hostport: 50510
+  server_base_hostport_announce: 50510
+  server_base_grpcport: 51510
+  server_base_grpc_announceport: 51510
+
+
+device: "cuda"
+max_expert_index: 128
+log_dir: "logs/ppo"
+checkpoint_dir: "/simdata/pahrendt/checkpoints"
+checkpoint_keep_history: true
+checkpoint_update_period: 300

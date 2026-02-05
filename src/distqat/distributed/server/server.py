@@ -57,6 +57,7 @@ class SwarmServer(threading.Thread):
     :param start: if True, the server will immediately start as a background thread and returns control after server
         is ready (see .ready below)
     :param checkpoint_dir: directory to save and load expert checkpoints. If None, checkpointing is disabled.
+    :param checkpoint_keep_history: if True, keep timestamped checkpoints; if False, only keep checkpoint_last.pt
     :param kwargs: additional parameters forwarded to Runtime and other components.
     """
 
@@ -68,12 +69,16 @@ class SwarmServer(threading.Thread):
         announce_endpoint: Optional[Endpoint] = None,
         num_connection_handlers: int = 1,
         update_period: int = 30,
+        dht_expiration: int = 300,
         start=False,
         checkpoint_dir=None,
+        checkpoint_keep_history: bool = True,
+        checkpoint_update_period: int = 1800,
         **kwargs,
     ):
         super().__init__()
         self.dht, self.experts, self.update_period = dht, expert_backends, update_period
+        self.dht_expiration = dht_expiration
         if get_port(listen_on) is None:
             listen_on = replace_port(listen_on, new_port=get_free_port())
         self.listen_on, self.port = listen_on, get_port(listen_on)
@@ -81,7 +86,9 @@ class SwarmServer(threading.Thread):
 
         self.conn_handlers = [ConnectionHandler(listen_on, self.experts) for _ in range(num_connection_handlers)]
         if checkpoint_dir is not None:
-            self.checkpoint_saver = CheckpointSaver(expert_backends, checkpoint_dir, update_period)
+            self.checkpoint_saver = CheckpointSaver(
+                expert_backends, checkpoint_dir, checkpoint_update_period, keep_history=checkpoint_keep_history
+            )
         else:
             self.checkpoint_saver = None
         self.runtime = Runtime(self.experts, **kwargs)
@@ -92,6 +99,7 @@ class SwarmServer(threading.Thread):
                 dht=self.dht,
                 endpoint=self.announce_endpoint,
                 update_period=self.update_period,
+                expiration=self.dht_expiration,
                 daemon=True,
             )
 
@@ -117,17 +125,21 @@ class SwarmServer(threading.Thread):
         quant_config: Optional[QuantConfig] = None,
         device=None,
         fp16=False,
+        autocast_dtype: Optional[torch.dtype] = None,
         no_dht=False,
         initial_peers=(),
         host_maddrs=(),
         announce_maddrs=(),
         checkpoint_dir: Optional[Path] = None,
+        checkpoint_keep_history: bool = True,
         compression=CompressionType.NONE,
         stats_report_interval: Optional[int] = None,
         custom_module_path=None,
         dht: Optional[DHT] = None,
         cfg: Config = None,
         stage_index: int = 0,
+        skip_load_from_peers: bool = False,
+        skip_load_checkpoints: bool = False,
         *,
         start: bool,
         **kwargs,
@@ -156,6 +168,7 @@ class SwarmServer(threading.Thread):
         :param initial_peers: multiaddrs of one or more active DHT peers (if you want to join an existing DHT)
 
         :param checkpoint_dir: directory to save and load expert checkpoints
+        :param checkpoint_keep_history: if True, keep timestamped checkpoints; if False, only keep checkpoint_last.pt
 
         :param compression: if specified, use this compression to pack all inputs, outputs and gradients by all experts
             hosted on this server. For a more fine-grained compression, start server in python and specify compression
@@ -212,7 +225,8 @@ class SwarmServer(threading.Thread):
         sample_input_fn = name_to_input[expert_cls]
         pipeline_step_cfg = cfg.model_pipeline.pipeline[stage_index]
         sample_input_kwargs = kwargs_from_config(sample_input_fn, pipeline_step_cfg, cfg.data)
-        sample_input = sample_input_fn(3, **sample_input_kwargs)
+        sample_input = sample_input_fn(cfg.diloco.batch_size_per_step, **sample_input_kwargs)
+        args_schema: Tuple[BatchTensorDescriptor, ...] = ()
         if isinstance(sample_input, tuple):
             args_schema = tuple(BatchTensorDescriptor.from_tensor(arg, compression) for arg in sample_input)
         else:
@@ -221,6 +235,11 @@ class SwarmServer(threading.Thread):
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         if isinstance(device, str):
             device = torch.device(device)
+
+        use_autocast = bool(fp16) or (autocast_dtype is not None)
+        if autocast_dtype is None and fp16:
+            autocast_dtype = torch.float16
+
         # initialize experts
         experts = {}
         for expert_uid in expert_uids:
@@ -238,20 +257,39 @@ class SwarmServer(threading.Thread):
                 optim = optim_cls(params=expert.parameters(), avg_only_params=avg_only_params, expert=expert, **optim_kwargs, dht=dht)
             else:
                 optim = optim_cls(params=expert.parameters(), avg_only_params=avg_only_params, **optim_kwargs, dht=dht)
-            optim.load_state_from_peers()
+            
+            if skip_load_from_peers:
+                logger.info(f"Skipping load_state_from_peers for expert {expert_uid} (skip_load_from_peers=True)")
+            else:
+                optim.load_state_from_peers()
+            
+            outputs_schema = None
+            if pipeline_step_cfg.outputs_schema_instance_dims is not None:
+                out_dtype = autocast_dtype if use_autocast and autocast_dtype is not None else torch.float32
+                dummy_out = torch.empty(
+                    (cfg.diloco.batch_size_per_step, *pipeline_step_cfg.outputs_schema_instance_dims),
+                    dtype=out_dtype,
+                )
+                outputs_schema = BatchTensorDescriptor.from_tensor(dummy_out, compression)
+
             experts[expert_uid] = ExpertBackend(
                 name=expert_uid,
                 expert=expert,
                 args_schema=args_schema,
                 optimizer=optim,
                 device=device,
-                fp16=fp16,
+                fp16=use_autocast,
+                autocast_dtype=autocast_dtype,
+                outputs_schema=outputs_schema,
                 clip_grad_norm=clip_grad_norm,
                 min_batch_size=min_batch_size,
                 max_batch_size=max_batch_size,
+                compression=compression,
             )
-        if checkpoint_dir is not None:
+        if checkpoint_dir is not None and not skip_load_checkpoints:
             load_experts(experts, checkpoint_dir)
+        elif skip_load_checkpoints:
+            logger.info(f"Skipping checkpoint loading (skip_load_checkpoints=True)")
 
         return cls(
             dht,
@@ -261,6 +299,7 @@ class SwarmServer(threading.Thread):
             num_connection_handlers=num_handlers,
             device=device,
             checkpoint_dir=checkpoint_dir,
+            checkpoint_keep_history=checkpoint_keep_history,
             stats_report_interval=stats_report_interval,
             start=start,
             **kwargs,

@@ -1,0 +1,78 @@
+wandb_project: "distqat"
+experiment_prefix: "gcn"
+
+data:
+  dataset_name: "ogbn-arxiv"
+  task_type: "node_pred"
+  num_workers: 0
+  precision: "32-true"
+  dataset_split: "train"
+  dataset_split_validation: "valid"
+  # NeighborLoader settings
+  neighbor_sample_sizes: [10, 10]  # Sample 10 neighbors per hop, 2 hops
+  neighbor_batch_size: 512         # Number of target nodes per mini-batch
+
+diloco:
+  inner_optim:
+    type: "adam"
+    adam_lr: 0.01
+    adam_weight_decay: 5e-4
+    adam_betas1: 0.9
+    adam_betas2: 0.95
+  outer_optim:
+    type: "sgd"
+    sgd_lr: 0.9
+    sgd_momentum: 0.0
+    sgd_nesterov: False
+  inner_steps: 10
+  outer_steps: 200
+  batch_size_per_step: 1
+  min_refresh_period: 5.0
+  max_refresh_period: 30.0
+  verbose: true
+  gradient_accumulation_steps: 1
+
+  averaging_timeout: 600.0
+  min_matchmaking_time: 300.0
+  request_timeout: 60.0
+  load_state_timeout: 180.0
+  metadata_expiration: 1800.0
+
+  target_group_size: 4
+  min_group_size: 2
+
+model_pipeline:
+  pipeline:
+    - model_name: "gcn.full"
+      in_dim: 128
+      hid_dim: 128
+      num_classes: 40
+      # With NeighborLoader, these are upper bounds for sampled subgraph size
+      # Actual sizes depend on neighbor_sample_sizes and neighbor_batch_size
+      num_nodes: 60000   # Max sampled nodes per mini-batch
+      num_edges: 300000  # Max sampled edges per mini-batch
+      outputs_schema_instance_dims: [512, 40]  # [batch_size, num_classes]
+  forward_timeout: 90.0
+  backward_timeout: 180.0
+
+param_mirror:
+  enable: false
+  refresh_every: 300
+
+
+network:
+  skip_load_from_peers: true
+  skip_load_checkpoints: true
+  hivemind_compression: "fp16"
+
+data_server:
+  ipc_host: "127.0.0.1"
+  ipc_port: 52555
+  ipc_key: "distqat"
+  num_workers: 1
+  pool_size: 32
+
+world_size: 1
+device: "cuda"
+max_expert_index: 128
+log_dir: "logs/gcn"

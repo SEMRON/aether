@@ -1,0 +1,449 @@
+# site.yml
+- name: Unified distqat + gcn setup (monitor first, then workers and eval node)
+  hosts: "*gcn*"
+  gather_facts: true
+
+  vars:
+    # -------------------------
+    # Inventory / groups
+    # -------------------------
+    monitor_group_name: "monitor"
+    worker_group_name: "gpu_node"
+    eval_group_name: "eval_node"
+    baseline_eval_group_name: "baseline_eval_node"
+
+    # -------------------------
+    # Repo / install
+    # -------------------------
+    github_pat: "{{ lookup('env', 'GITHUB_PAT') }}"
+    repo_url: "https://{{ github_pat }}@github.com/SEMRON/distqat.git"
+    repo_dest: "{{ ansible_facts['env']['HOME'] }}/distqat"
+
+    # -------------------------
+    # uv / python
+    # -------------------------
+    uv_bin: "/snap/bin/uv"
+    python_version: "3.10"
+
+    # -------------------------
+    # Tokens (prefer --extra-vars or Vault)
+    # -------------------------
+    wandb_api_key: "{{ lookup('env', 'WANDB_API_KEY') }}"
+    hf_token: "{{ lookup('env', 'HF_TOKEN') }}"
+
+    # -------------------------
+    # Model / network selection (parameterized)
+    # -------------------------
+    gcn_network_type: "gcn"
+    gcn_config_path: "configs/{{ gcn_network_type }}.yaml"
+
+    # -------------------------
+    # Paths / files
+    # -------------------------
+    gcn_logs_dir: "{{ repo_dest }}/logs/gcn"
+    initial_peers_filename: "initial_peers.txt"
+    wandb_run_id_filename: "wandb_run_id.txt"
+
+    # -------------------------
+    # Services
+    # -------------------------
+    trainer_client_service_name: "gcn-trainer-client"
+    trainer_client_exec: "{{ repo_dest }}/.venv/bin/python start_trainer_client.py --config-path {{ gcn_config_path }}"
+
+    # -------------------------
+    # Systemd environment injection (visible to services)
+    # -------------------------
+    systemd_env_dir: "/etc/default"
+    systemd_env_file: "{{ systemd_env_dir }}/distqat-gcn.env"
+
+    # -------------------------
+    # Python extras per role
+    # -------------------------
+    worker_extras: "gpuspecific"
+
+  tasks:
+    - name: Compute role membership and monitor host
+      ansible.builtin.set_fact:
+        is_monitor: "{{ inventory_hostname in (groups[monitor_group_name] | default([])) }}"
+        is_worker: "{{ inventory_hostname in (groups[worker_group_name] | default([])) }}"
+        is_eval_node: "{{ inventory_hostname in (groups[eval_group_name] | default([])) }}"
+        is_baseline_eval_node: "{{ inventory_hostname in (groups[baseline_eval_group_name] | default([])) }}"
+        monitor_host: "{{ (groups[monitor_group_name] | default([])) | first }}"
+        initial_peers_remote_path: "{{ gcn_logs_dir }}/{{ initial_peers_filename }}"
+        initial_peers_local_tmp: "/tmp/{{ initial_peers_filename }}.gcn.from_monitor"
+        wandb_run_id_remote_path: "{{ gcn_logs_dir }}/{{ wandb_run_id_filename }}"
+        wandb_run_id_local_tmp: "/tmp/{{ wandb_run_id_filename }}.gcn.from_monitor"
+
+    # -------------------------
+    # Common: base packages + repo + venv
+    # -------------------------
+    - name: Clean apt cache and force refresh (Ubuntu)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+        apt-get update
+      args:
+        executable: /bin/bash
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+      retries: 3
+      delay: 5
+      register: apt_update_result
+      until: apt_update_result.rc == 0
+
+    - name: Install required packages (Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3
+          - python3-pip
+          - libpython3-dev
+          - libopenmpi-dev
+        state: present
+        update_cache: no
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+      retries: 3
+      delay: 10
+      register: apt_install_result
+      until: apt_install_result is success
+
+    - name: Install astral-uv with snap (Ubuntu)
+      community.general.snap:
+        name: astral-uv
+        state: present
+        classic: true
+      become: true
+      when: ansible_facts['distribution'] == 'Ubuntu'
+
+    - name: Clone distqat git repo
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        clone: yes
+        update: yes
+        version: tbartsch/gcn
+        force: yes
+      become: false
+
+    - name: Create Python venv using uv
+      ansible.builtin.shell: |
+        set -euo pipefail
+        "{{ uv_bin }}" venv --python={{ python_version }}
+      args:
+        chdir: "{{ repo_dest }}"
+        creates: "{{ repo_dest }}/.venv"
+        executable: /bin/bash
+      become: false
+
+    - name: Ensure managed section is present in pyproject.toml (idempotent)
+      ansible.builtin.blockinfile:
+        path: "{{ repo_dest }}/pyproject.toml"
+        block: |
+          [[tool.uv.index]]
+          name = "pytorch_cpu"
+          url = "https://download.pytorch.org/whl/cpu"
+          explicit = true
+
+          [tool.uv.sources]
+          torch = { index = "pytorch_cpu" }
+          torchvision = { index = "pytorch_cpu" }
+          torchaudio = { index = "pytorch_cpu" }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - aether auto setup"
+        insertafter: EOF
+        create: no
+      become: false
+
+    # -------------------------
+    # Role-specific editable install
+    # -------------------------
+    - name: Install project extras for all nodes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source .venv/bin/activate
+        "{{ uv_bin }}" pip install -e .[{{ worker_extras }}]
+      args:
+        chdir: "{{ repo_dest }}"
+        executable: /bin/bash
+      become: false
+
+    # -------------------------
+    # Make tokens available to systemd services (no bashrc dependency)
+    # -------------------------
+    - name: Ensure systemd env dir exists
+      ansible.builtin.file:
+        path: "{{ systemd_env_dir }}"
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Write environment file for services
+      ansible.builtin.copy:
+        dest: "{{ systemd_env_file }}"
+        owner: root
+        group: root
+        mode: "0640"
+        content: |
+          # Managed by Ansible
+          {% if wandb_api_key | default('') | length > 0 -%}
+          WANDB_API_KEY={{ wandb_api_key }}
+          {% endif -%}
+          {% if hf_token | default('') | length > 0 -%}
+          HF_TOKEN={{ hf_token }}
+          {% endif -%}
+      become: true
+
+    # -------------------------
+    # Monitor: start service first
+    # -------------------------
+    - name: Create trainer client systemd service (monitor only)
+      when: is_monitor
+      block:
+        - name: Write systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ trainer_client_service_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Trainer Client Service ({{ gcn_network_type }})
+              After=network.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory={{ repo_dest }}
+              ExecStart={{ trainer_client_exec }}
+              Restart=always
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+
+              [Install]
+              WantedBy=multi-user.target
+          become: true
+
+        - name: Reload systemd
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+        - name: Enable and start service
+          ansible.builtin.systemd:
+            name: "{{ trainer_client_service_name }}.service"
+            enabled: yes
+            state: started
+          become: true
+
+    # -------------------------
+    # After monitor is up: fetch peers -> copy to workers/eval -> then setup
+    # -------------------------
+    - name: Wait until initial peers file exists and has content on monitor
+      ansible.builtin.stat:
+        path: "{{ initial_peers_remote_path }}"
+      register: peers_stat
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      until: peers_stat.stat.exists and peers_stat.stat.size | default(0) > 0
+      retries: 60
+      delay: 2
+
+    - name: Wait until wandb_run_id file exists and has content on monitor
+      ansible.builtin.stat:
+        path: "{{ wandb_run_id_remote_path }}"
+      register: wandb_id_stat
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      until: wandb_id_stat.stat.exists and wandb_id_stat.stat.size | default(0) > 0
+      retries: 60
+      delay: 2
+
+    - name: Fetch initial peers file from monitor to control machine
+      ansible.builtin.fetch:
+        src: "{{ initial_peers_remote_path }}"
+        dest: "{{ initial_peers_local_tmp }}"
+        flat: yes
+        validate_checksum: no
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      retries: 3
+      delay: 2
+
+    - name: Fetch wandb_run_id file from monitor to control machine
+      ansible.builtin.fetch:
+        src: "{{ wandb_run_id_remote_path }}"
+        dest: "{{ wandb_run_id_local_tmp }}"
+        flat: yes
+        validate_checksum: no
+      delegate_to: "{{ monitor_host }}"
+      run_once: true
+      retries: 3
+      delay: 2
+
+    - name: Ensure gcn logs dir exists (workers, eval, and baseline eval)
+      ansible.builtin.file:
+        path: "{{ gcn_logs_dir }}"
+        state: directory
+        mode: "0755"
+      when: is_worker or is_eval_node or is_baseline_eval_node
+
+    - name: Copy initial peers file to workers and eval nodes
+      ansible.builtin.copy:
+        src: "{{ initial_peers_local_tmp }}"
+        dest: "{{ initial_peers_remote_path }}"
+        mode: "0644"
+      when: is_worker or is_eval_node or is_baseline_eval_node
+
+    - name: Copy wandb_run_id file to workers and eval nodes
+      ansible.builtin.copy:
+        src: "{{ wandb_run_id_local_tmp }}"
+        dest: "{{ wandb_run_id_remote_path }}"
+        mode: "0644"
+      when: is_worker or is_eval_node or is_baseline_eval_node
+
+    # -------------------------
+    # Worker: start server service
+    # -------------------------
+    - name: Create worker server systemd service
+      when: is_worker
+      block:
+        - name: Extract expert index from hostname
+          ansible.builtin.set_fact:
+            worker_expert_index: "{{ inventory_hostname.split('_')[-1] }}"
+
+        - name: Write worker systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/gcn-worker-server.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=GCN Worker Server
+              After=network.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory={{ repo_dest }}
+              ExecStart=/bin/bash -c '{{ repo_dest }}/.venv/bin/python start_servers.py --config-path {{ gcn_config_path }} --initial-peers-path {{ initial_peers_remote_path }} --num-servers 1 --expert-index {{ worker_expert_index }} --stage-index 0 --wandb-run-id "$(cat {{ wandb_run_id_remote_path }})"'
+              Restart=always
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+
+              [Install]
+              WantedBy=multi-user.target
+          become: true
+
+        - name: Reload systemd (worker)
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+        - name: Enable and start worker service
+          ansible.builtin.systemd:
+            name: "gcn-worker-server.service"
+            enabled: yes
+            state: started
+          become: true
+
+    # -------------------------
+    # Eval node: start evaluation service (mirrors parameters from workers)
+    # Periodic execution is handled by systemd timer
+    # -------------------------
+    - name: Create evaluation service and timer on eval node
+      when: is_eval_node
+      block:
+        - name: Write evaluation systemd unit (oneshot)
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/gcn-evaluate.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=GCN Evaluation (Parameter Mirror)
+              After=network.target
+
+              [Service]
+              Type=oneshot
+              WorkingDirectory={{ repo_dest }}
+              ExecStart={{ repo_dest }}/.venv/bin/python deployment/models/gcn/evaluate.py --index 0 --wandb-run-id-path {{ wandb_run_id_remote_path }}
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+          become: true
+
+        - name: Write evaluation systemd timer
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/gcn-evaluate.timer"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Run GCN Evaluation periodically
+
+              [Timer]
+              OnBootSec=30s
+              OnUnitActiveSec=2min
+              AccuracySec=10s
+
+              [Install]
+              WantedBy=timers.target
+          become: true
+
+        - name: Reload systemd (eval node)
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+        - name: Enable and start evaluation timer
+          ansible.builtin.systemd:
+            name: "gcn-evaluate.timer"
+            enabled: yes
+            state: started
+          become: true
+
+    # -------------------------
+    # Baseline eval node: runs training without DiLoCo for comparison
+    # -------------------------
+    - name: Create baseline evaluation service on baseline eval node
+      when: is_baseline_eval_node
+      block:
+        - name: Write baseline evaluation systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/gcn-baseline-eval.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=GCN Baseline Evaluation (No DiLoCo)
+              After=network.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory={{ repo_dest }}
+              ExecStart={{ repo_dest }}/.venv/bin/python run_local.py --config-path {{ gcn_config_path }} --public-ip 127.0.0.1 --num-servers 0 --delete-checkpoints --no-diloco
+              Restart=always
+              User={{ ansible_facts['env']['USER'] }}
+              EnvironmentFile={{ systemd_env_file }}
+              Environment=PYTHONUNBUFFERED=1
+
+              [Install]
+              WantedBy=multi-user.target
+          become: true
+
+        - name: Reload systemd (baseline eval node)
+          ansible.builtin.systemd:
+            daemon_reload: yes
+          become: true
+
+        - name: Enable and start baseline evaluation service
+          ansible.builtin.systemd:
+            name: "gcn-baseline-eval.service"
+            enabled: yes
+            state: started
+          become: true

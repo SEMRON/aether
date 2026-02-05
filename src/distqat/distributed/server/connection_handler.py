@@ -3,8 +3,13 @@ import os
 import pickle
 from typing import Dict
 
-import grpc
 import torch
+# Set sharing strategy BEFORE any tensors are created to avoid shared memory cleanup issues
+# when forked ConnectionHandler processes terminate
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
+
+import grpc
 
 from hivemind.compression import deserialize_torch_tensor, serialize_torch_tensor
 from hivemind.proto import runtime_pb2
@@ -92,8 +97,15 @@ class ConnectionHandler(mp.context.ForkProcess):
         """
         inputs = [deserialize_torch_tensor(tensor) for tensor in request.tensors]
         future = self.experts[request.uid].forward_pool.submit_task(*inputs)
+        # NOTE: hivemind serialization sends bf16 as fp32-sized payloads under CompressionType.NONE,
+        # and Float16Compression does not support bf16 tensors. To avoid 2x network traffic under bf16-mixed,
+        # we downcast bf16 -> fp16 for transport (compute still happens under autocast on the expert).
         serialized_response = [
-            serialize_torch_tensor(tensor, proto.compression, allow_inplace=True)
+            serialize_torch_tensor(
+                (tensor.to(dtype=torch.float16) if isinstance(tensor, torch.Tensor) and tensor.dtype == torch.bfloat16 else tensor),
+                proto.compression,
+                allow_inplace=True,
+            )
             for tensor, proto in zip(await future, nested_flatten(self.experts[request.uid].outputs_schema))
         ]
 
@@ -114,7 +126,36 @@ class ConnectionHandler(mp.context.ForkProcess):
         inputs_and_grad_outputs = [deserialize_torch_tensor(tensor) for tensor in request.tensors]
         future = self.experts[request.uid].backward_pool.submit_task(*inputs_and_grad_outputs)
         serialized_response = [
-            serialize_torch_tensor(tensor, proto.compression, allow_inplace=True)
+            serialize_torch_tensor(
+                (tensor.to(dtype=torch.float16) if isinstance(tensor, torch.Tensor) and tensor.dtype == torch.bfloat16 else tensor),
+                proto.compression,
+                allow_inplace=True,
+            )
             for tensor, proto in zip(await future, nested_flatten(self.experts[request.uid].grad_inputs_schema))
         ]
+        return runtime_pb2.ExpertResponse(tensors=serialized_response)
+
+    async def forward_averaged(self, request: runtime_pb2.ExpertRequest, context: grpc.ServicerContext):
+        """
+        Handle gRPC requests for expert forward passes using globally averaged model weights.
+        
+        This endpoint is useful for distributed RL where rollouts should be collected
+        under a consistent policy (the averaged model) across all workers.
+        
+        :param request: ExpertRequest containing expert UID and input tensors
+        :param context: gRPC service context
+        :returns: ExpertResponse containing serialized output tensors
+        """
+        inputs = [deserialize_torch_tensor(tensor) for tensor in request.tensors]
+        future = self.experts[request.uid].forward_averaged_pool.submit_task(*inputs)
+        # Same bf16->fp16 downcast as regular forward
+        serialized_response = [
+            serialize_torch_tensor(
+                (tensor.to(dtype=torch.float16) if isinstance(tensor, torch.Tensor) and tensor.dtype == torch.bfloat16 else tensor),
+                proto.compression,
+                allow_inplace=True,
+            )
+            for tensor, proto in zip(await future, nested_flatten(self.experts[request.uid].outputs_schema))
+        ]
+
         return runtime_pb2.ExpertResponse(tensors=serialized_response)

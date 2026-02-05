@@ -1,0 +1,37 @@
+name = "Prime Intellect GPU deployment example"
+comment = """
+Example deployment configuration for Prime Intellect GPU cloud.
+
+Before running, ensure:
+1. Set your API token: export PRIME_INTELLECT_API_TOKEN=<your-token>
+2. Replace 'your-team-id-here' with your actual Prime Intellect team ID
+
+Run from the deployment/ directory with:
+  python deploy.py deploy --setup-definition examples/prime-intellect-test.toml
+"""
+
+# Single GPU worker node
+[nodes.gpu_node]
+name = "my_gpu_node"
+os = "ubuntu-22.04"
+
+[nodes.gpu_node.array]
+count = 3
+name_template = "depl_test_{array_name}"
+names = ["node1", "node2", "node3"]
+
+[nodes.gpu_node.deployment]
+provider = "prime_intellect"
+
+[nodes.gpu_node.deployment.config]
+gpu_type = "RTX6000Ada_48GB"
+
+team_id = "cmjbklw0g001610lfmxtlul5p"
+
+regions = ["eu_west", "eu_north", "united_states"]
+
+os_prefix = "ubuntu_22"
+
+provision_timeout = 5
+
+provider_blacklist = ["runpod"]

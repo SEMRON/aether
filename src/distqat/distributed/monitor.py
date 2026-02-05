@@ -3,9 +3,11 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 import ipaddress
+from pathlib import Path
 
 import torch
-torch.multiprocessing.set_sharing_strategy('file_descriptor')
+# Avoid exhausting file descriptors under heavy tensor sharing (hivemind/torch mp reduction).
+torch.multiprocessing.set_sharing_strategy("file_system")
 
 from pydantic._internal._generate_schema import UnsupportedFieldAttributeWarning
 warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
@@ -14,6 +16,7 @@ from typing import Dict, List, Optional, Set
 import time
 import click
 import wandb
+from pydantic import ValidationError
 from hivemind.utils.logging import get_logger, use_hivemind_log_handler
 from hivemind.dht import DHT
 from hivemind.dht.crypto import RSASignatureValidator
@@ -32,6 +35,7 @@ import string
 
 logger = get_logger(__name__)
 use_hivemind_log_handler("in_root_logger")
+logger.setLevel('DEBUG')
 
 
 @dataclass
@@ -71,61 +75,89 @@ class PipelineInfo:
 class LogEntry:
     step: int
     timestamp: float
+    distributed_step: Optional[int] = None
+    baseline_step: Optional[int] = None
+    trainer_steps: Dict[int, int] = field(default_factory=dict)
+    trainer_losses: Dict[int, float] = field(default_factory=dict)
     distributed_loss: Optional[float] = None
     baseline_loss: Optional[float] = None
+    scalars: Dict[str, float] = field(default_factory=dict)
     pipelines: List[PipelineInfo] = field(default_factory=list)
 
     def as_console_message(self) -> str:
         distributed_loss_str = f"{self.distributed_loss:.5f}" if self.distributed_loss is not None else "n/a"
         baseline_loss_str = f"{self.baseline_loss:.5f}" if self.baseline_loss is not None else "n/a"
+        distributed_step_str = str(self.distributed_step) if self.distributed_step is not None else "n/a"
+        baseline_step_str = str(self.baseline_step) if self.baseline_step is not None else "n/a"
+        episodic_return = (self.scalars or {}).get("charts/episodic_return")
+        episodic_length = (self.scalars or {}).get("charts/episodic_length")
+        env_step = (self.scalars or {}).get("charts/env_step")
+        episodic_return_str = f"{episodic_return:.5f}" if episodic_return is not None else "n/a"
+        episodic_length_str = f"{episodic_length:.2f}" if episodic_length is not None else "n/a"
 
         lines = [
             f"[Step {self.step}]",
+            f"  Train steps: distributed={distributed_step_str}, baseline={baseline_step_str}",
             "  Losses:",
             f"    distributed: {distributed_loss_str}",
             f"    baseline:    {baseline_loss_str}",
         ]
+        if env_step is not None:
+            try:
+                lines.insert(1, f"  Env step: {int(env_step)}")
+            except Exception:
+                lines.insert(1, f"  Env step: {env_step}")
 
-        lines.append("  Pipelines:")
-        if self.pipelines:
-            for pipeline in self.pipelines:
-                lines.append(f"    Pipeline #{pipeline.pipeline_index}:")
-                if pipeline.stages:
-                    for stage in pipeline.stages:
-                        stage_header = f"      - {stage.stage_name}: {stage.num_peers} peer(s)"
-                        if stage.missing:
-                            stage_header += " [missing]"
-                        lines.append(stage_header)
-                        if stage.nodes:
-                            for node in stage.nodes:
-                                display_name = node.display_identifier()
-                                lines.append(f"          - {display_name}")
-                                lines.append(f"              last_contact: {node.last_contact_iso()}")
-                                if node.address and node.peer_id:
-                                    lines.append(f"              peer_id: {node.peer_id}")
-                                elif not node.address and node.peer_id != display_name:
-                                    lines.append(f"              peer_id: {node.peer_id}")
-                                resolved_endpoint = next(
-                                    (
-                                        endpoint
-                                        for endpoint in node.endpoints
-                                        if endpoint
-                                    ),
-                                    None,
-                                )
-                                if resolved_endpoint and resolved_endpoint != display_name:
-                                    lines.append(f"              endpoint: {resolved_endpoint}")
-                                elif node.multiaddrs:
-                                    lines.append(f"              multiaddr: {node.multiaddrs[0]}")
-                        else:
-                            if stage.missing:
-                                lines.append("          (stage missing)")
-                            else:
-                                lines.append("          (no active peers)")
-                else:
-                    lines.append("      (no stages)")
-        else:
-            lines.append("    (no pipeline data)")
+        if episodic_return is not None or episodic_length is not None:
+            lines.extend(
+                [
+                    "  Episode:",
+                    f"    return:      {episodic_return_str}",
+                    f"    length:      {episodic_length_str}",
+                ]
+            )
+
+
+        # lines.append("  Pipelines:")
+        # if self.pipelines:
+        #     for pipeline in self.pipelines:
+        #         lines.append(f"    Pipeline #{pipeline.pipeline_index}:")
+        #         if pipeline.stages:
+        #             for stage in pipeline.stages:
+        #                 stage_header = f"      - {stage.stage_name}: {stage.num_peers} peer(s)"
+        #                 if stage.missing:
+        #                     stage_header += " [missing]"
+        #                 lines.append(stage_header)
+        #                 if stage.nodes:
+        #                     for node in stage.nodes:
+        #                         display_name = node.display_identifier()
+        #                         lines.append(f"          - {display_name}")
+        #                         lines.append(f"              last_contact: {node.last_contact_iso()}")
+        #                         if node.address and node.peer_id:
+        #                             lines.append(f"              peer_id: {node.peer_id}")
+        #                         elif not node.address and node.peer_id != display_name:
+        #                             lines.append(f"              peer_id: {node.peer_id}")
+        #                         resolved_endpoint = next(
+        #                             (
+        #                                 endpoint
+        #                                 for endpoint in node.endpoints
+        #                                 if endpoint
+        #                             ),
+        #                             None,
+        #                         )
+        #                         if resolved_endpoint and resolved_endpoint != display_name:
+        #                             lines.append(f"              endpoint: {resolved_endpoint}")
+        #                         elif node.multiaddrs:
+        #                             lines.append(f"              multiaddr: {node.multiaddrs[0]}")
+        #                 else:
+        #                     if stage.missing:
+        #                         lines.append("          (stage missing)")
+        #                     else:
+        #                         lines.append("          (no active peers)")
+        #         else:
+        #             lines.append("      (no stages)")
+        # else:
+        #     lines.append("    (no pipeline data)")
 
         return "\n".join(lines)
 
@@ -146,10 +178,27 @@ class LogEntry:
             "monitor/nodes_count": len(unique_peers),
         }
 
+        if self.distributed_step is not None:
+            payload["distributed/step"] = self.distributed_step
+        if self.baseline_step is not None:
+            payload["baseline/step"] = self.baseline_step
+        for trainer_id, step in (self.trainer_steps or {}).items():
+            payload[f"trainer_{trainer_id}/step"] = step
+
         if self.distributed_loss is not None:
             payload["loss/distributed"] = self.distributed_loss
         if self.baseline_loss is not None:
             payload["loss/baseline"] = self.baseline_loss
+        for trainer_id, loss in (self.trainer_losses or {}).items():
+            payload[f"loss/trainer_{trainer_id}"] = loss
+
+        # Forward arbitrary scalar metrics collected from trainers/baseline via DHT.
+        # Avoid clobbering monitor/* or loss/* keys if the user logs a colliding name.
+        for key, value in (self.scalars or {}).items():
+            if key in payload:
+                payload[f"scalars/{key}"] = value
+            else:
+                payload[key] = value
 
         for pipeline in self.pipelines:
             for stage in pipeline.stages:
@@ -203,6 +252,11 @@ class Monitor:
 
         # Initialize wandb only if wandb_project is set
         self.wandb_enabled = config.wandb_project is not None
+        self._wandb_defined_trainers: Set[int] = set()
+        self._wandb_run_id: Optional[str] = None
+        # Refresh wandb_run_id in DHT every 30 minutes (expiration is 1 hour, so refresh at half-life)
+        self._wandb_run_id_refresh_interval = 1800  # 30 minutes in seconds
+        self._last_wandb_run_id_refresh = 0.0
         if self.wandb_enabled:
             wandb_run_id = config.wandb_run_id
             if wandb_run_id is None:
@@ -216,6 +270,8 @@ class Monitor:
             else:
                 store_wandb_run_id(self.dht, config.experiment_prefix, wandb_run_id, expiration=3600)
                 logger.info(f"Stored wandb_run_id in DHT: {wandb_run_id}")
+            self._wandb_run_id = wandb_run_id
+            self._last_wandb_run_id_refresh = time.time()
             
             try:
                 wandb.init(
@@ -229,6 +285,22 @@ class Monitor:
                 )
                 logger.debug(f"Wandb initialized: {config.wandb_entity} {config.wandb_project} {config.experiment_prefix} {wandb_run_id}")
                 wandb.config.update(config.model_dump())
+                # Configure independent step clocks for metrics that may advance at different rates.
+                # This avoids W&B's global step monotonicity constraints while keeping plots meaningful.
+                wandb.define_metric("baseline/*", step_metric="baseline/step")
+                wandb.define_metric("distributed/*", step_metric="distributed/step")
+                wandb.define_metric("loss/baseline", step_metric="baseline/step")
+                wandb.define_metric("loss/distributed", step_metric="distributed/step")
+                # Aligned plots: baseline vs distributed on the same x-axis (train step).
+                wandb.define_metric("loss_aligned/*", step_metric="train/step")
+                # PPO env metrics: align episodic return/length plots on env-step.
+                wandb.define_metric("charts/episodic_return", step_metric="charts/env_step")
+                wandb.define_metric("charts/episodic_length", step_metric="charts/env_step")
+                wandb.define_metric("episodic_return/*", step_metric="charts/env_step")
+                wandb.define_metric("episodic_length/*", step_metric="charts/env_step")
+                # Eval metrics from the evaluator (published to DHT, collected by monitor)
+                wandb.define_metric("eval/*", step_metric="eval/step")
+                logger.info(f"Wandb initialized successfully. Run URL: {wandb.run.url if wandb.run else 'N/A'}")
             except Exception as e:
                 logger.warning(f"Failed to initialize wandb: {e}. Continuing without wandb logging.")
                 self.wandb_enabled = False
@@ -236,6 +308,31 @@ class Monitor:
             logger.info("Wandb project not set, skipping wandb initialization")
     
         self.store_ip_addresses_path = store_ip_addresses_path
+        
+        # Compute wandb_run_id file path from store_ip_addresses_path (same directory)
+        if store_ip_addresses_path:
+            ip_path = Path(store_ip_addresses_path)
+            self.wandb_run_id_path = ip_path.parent / "wandb_run_id.txt"
+        else:
+            self.wandb_run_id_path = None
+
+    def _refresh_wandb_run_id_if_needed(self) -> None:
+        """Refresh the wandb_run_id in DHT if the refresh interval has passed.
+        
+        This ensures the DHT entry doesn't expire during long-running experiments,
+        allowing restarted services to find the existing wandb run.
+        """
+        if not self._wandb_run_id:
+            return
+        
+        now = time.time()
+        if now - self._last_wandb_run_id_refresh >= self._wandb_run_id_refresh_interval:
+            try:
+                store_wandb_run_id(self.dht, self.config.experiment_prefix, self._wandb_run_id, expiration=3600)
+                self._last_wandb_run_id_refresh = now
+                logger.debug(f"Refreshed wandb_run_id in DHT: {self._wandb_run_id}")
+            except Exception as e:
+                logger.warning(f"Failed to refresh wandb_run_id in DHT: {e}")
 
     @staticmethod
     async def _list_peer_multiaddrs(_dht, node) -> Dict[str, List[str]]:
@@ -507,7 +604,32 @@ class Monitor:
         logger.info(entry.as_console_message())
         if self.wandb_enabled:
             try:
-                wandb.log(entry.to_wandb_payload())
+                # Define per-trainer metrics lazily (trainer IDs are discovered at runtime).
+                for trainer_id in (entry.trainer_steps or {}).keys():
+                    if trainer_id in self._wandb_defined_trainers:
+                        continue
+                    wandb.define_metric(f"loss/trainer_{trainer_id}", step_metric=f"trainer_{trainer_id}/step")
+                    self._wandb_defined_trainers.add(trainer_id)
+                # Base monitor payload (uses W&B's internal/global step, monotonically increasing by call order).
+                payload = entry.to_wandb_payload()
+                logger.debug(f"Logging to wandb: {list(payload.keys())}")
+                wandb.log(payload)
+
+                # Aligned losses (same x-axis: train/step). Logged as separate rows so each can carry its own step.
+                if entry.baseline_step is not None and entry.baseline_loss is not None:
+                    wandb.log(
+                        {
+                            "train/step": entry.baseline_step,
+                            "loss_aligned/baseline": entry.baseline_loss,
+                        }
+                    )
+                if entry.distributed_step is not None and entry.distributed_loss is not None:
+                    wandb.log(
+                        {
+                            "train/step": entry.distributed_step,
+                            "loss_aligned/distributed": entry.distributed_loss,
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"Failed to log log entry to wandb: {e}")
 
@@ -520,57 +642,289 @@ class Monitor:
         logger.info(f"MONITOR: Visible multiaddresses: {dht.get_visible_maddrs(latest=True)}")
 
         waiting_message = "MONITOR: Waiting for servers to join the training..."
-        last_logged_step = -1
+        last_logged_baseline_step = None
+        last_logged_distributed_step = None
+        last_logged_trainer_steps: Dict[int, int] = {}
         waiting_for_metrics_logged = False
         while True:
+            # Refresh wandb_run_id in DHT to prevent expiration during long runs
+            self._refresh_wandb_run_id_if_needed()
+            
             metrics_response = None
+            rl_metrics_response = None
             try:
                 if self.store_ip_addresses_path is not None:
                     with open(self.store_ip_addresses_path, "w") as f:
                         f.write(",".join(str(a) for a in self.dht.get_visible_maddrs(latest=True)))
+                # Write wandb_run_id to file for other nodes to read (avoids DHT race condition)
+                if self.wandb_run_id_path is not None and self._wandb_run_id:
+                    with open(self.wandb_run_id_path, "w") as f:
+                        f.write(self._wandb_run_id)
                 metrics_response = dht.get(experiment_prefix + "_metrics", latest=True)
+                rl_metrics_response = dht.get(experiment_prefix + "_rl_metrics", latest=True)
+                eval_metrics_response = dht.get(experiment_prefix + "_eval_metrics", latest=True)
+                baseline_eval_metrics_response = dht.get(experiment_prefix + "_baseline_eval_metrics", latest=True)
+                logger.debug(f"DHT metrics_response: {metrics_response is not None}, rl_metrics_response: {rl_metrics_response is not None}, eval_metrics_response: {eval_metrics_response is not None}, baseline_eval_metrics_response: {baseline_eval_metrics_response is not None}")
                 if metrics_response is None:
                     if not waiting_for_metrics_logged:
                         logger.info(waiting_message)
                         waiting_for_metrics_logged = True
                 else:
                     metrics_dict = metrics_response.value
-                    metrics = [
-                        LocalMetrics.model_validate(entry.value)
-                        for entry in metrics_dict.values()
-                        if entry.value is not None
-                    ]
+                    metrics = []
+                    for entry in metrics_dict.values():
+                        if entry.value is None:
+                            continue
+                        try:
+                            metrics.append(LocalMetrics.model_validate(entry.value))
+                        except ValidationError as e:
+                            # One peer can publish malformed/old data; don't crash the whole monitor loop.
+                            logger.debug(f"Skipping invalid metrics entry: {e}")
                     if metrics:
                         waiting_for_metrics_logged = False
-                        latest_step = max(item.step for item in metrics)
-                        if latest_step != last_logged_step:
-                            distributed_losses = [item.loss for item in metrics if item.trainer_id != -1]
-                            baseline_losses = [item.loss for item in metrics if item.trainer_id == -1]
+                        baseline_metrics = [item for item in metrics if item.trainer_id == -1]
+                        distributed_metrics = [item for item in metrics if item.trainer_id != -1]
 
-                            distributed_loss = (
-                                sum(distributed_losses) / len(distributed_losses) if distributed_losses else None
-                            )
-                            baseline_loss = (
-                                sum(baseline_losses) / len(baseline_losses) if baseline_losses else None
-                            )
+                        baseline_step = max((item.step for item in baseline_metrics), default=None)
+                        distributed_step = max((item.step for item in distributed_metrics), default=None)
 
-                            try:
-                                pipeline_infos = self._collect_progress_info()
-                            except Exception as e:
-                                logger.warning(f"Error retrieving or processing progress: {e}")
-                                import traceback
-                                traceback.print_exc()
-                                pipeline_infos = []
+                        trainer_ids = sorted({item.trainer_id for item in distributed_metrics})
+                        trainer_steps: Dict[int, int] = {}
+                        trainer_losses: Dict[int, float] = {}
+                        for trainer_id in trainer_ids:
+                            items = [item for item in distributed_metrics if item.trainer_id == trainer_id]
+                            trainer_step = max((item.step for item in items), default=None)
+                            if trainer_step is None:
+                                continue
+                            trainer_steps[trainer_id] = int(trainer_step)
+                            losses_at_step = [
+                                item.loss
+                                for item in items
+                                if item.step == trainer_step and item.loss is not None
+                            ]
+                            if losses_at_step:
+                                trainer_losses[trainer_id] = sum(losses_at_step) / len(losses_at_step)
 
-                            log_entry = LogEntry(
-                                step=latest_step,
-                                timestamp=time.time(),
-                                distributed_loss=distributed_loss,
-                                baseline_loss=baseline_loss,
-                                pipelines=pipeline_infos,
-                            )
-                            self.emit_log_entry(log_entry)
-                            last_logged_step = latest_step
+                        baseline_losses_at_step = [
+                            item.loss
+                            for item in baseline_metrics
+                            if baseline_step is not None and item.step == baseline_step and item.loss is not None
+                        ]
+                        distributed_losses_at_step = [
+                            item.loss
+                            for item in distributed_metrics
+                            if distributed_step is not None and item.step == distributed_step and item.loss is not None
+                        ]
+
+                        baseline_loss = (
+                            sum(baseline_losses_at_step) / len(baseline_losses_at_step)
+                            if baseline_losses_at_step
+                            else None
+                        )
+                        distributed_loss = (
+                            sum(distributed_losses_at_step) / len(distributed_losses_at_step)
+                            if distributed_losses_at_step
+                            else None
+                        )
+
+                        should_log = False
+                        logger.info(f"Baseline step: {baseline_step}, Last logged baseline step: {last_logged_baseline_step}")
+                        logger.info(f"Distributed step: {distributed_step}, Last logged distributed step: {last_logged_distributed_step}")
+                        logger.info(f"Trainer steps: {trainer_steps}, Last logged trainer steps: {last_logged_trainer_steps}")
+                        if baseline_step is not None and baseline_step != last_logged_baseline_step:
+                            should_log = True
+                        if distributed_step is not None and distributed_step != last_logged_distributed_step:
+                            should_log = True
+                        if trainer_steps != last_logged_trainer_steps:
+                            should_log = True
+
+                        if not should_log:
+                            logger.debug("Skipping log entry - no step change detected")
+                            time.sleep(self.refresh_period)
+                            continue
+
+                        # Aggregate arbitrary trainer-published scalars.
+                        # We compute a mean per key (across peers) and also optionally split baseline vs distributed.
+                        distributed_scalar_values: Dict[str, List[float]] = defaultdict(list)
+                        baseline_scalar_values: Dict[str, List[float]] = defaultdict(list)
+                        # Align scalar aggregation with the per-source step clocks (baseline/distributed).
+                        for item in metrics:
+                            if item.trainer_id == -1:
+                                if baseline_step is None or item.step != baseline_step:
+                                    continue
+                            else:
+                                if distributed_step is None or item.step != distributed_step:
+                                    continue
+                            scalars = getattr(item, "scalars", None) or {}
+                            if not isinstance(scalars, dict):
+                                continue
+                            for k, v in scalars.items():
+                                try:
+                                    fv = float(v)
+                                except Exception:
+                                    continue
+                                if item.trainer_id == -1:
+                                    baseline_scalar_values[str(k)].append(fv)
+                                else:
+                                    distributed_scalar_values[str(k)].append(fv)
+
+                        scalar_means: Dict[str, float] = {}
+                        for k, values in distributed_scalar_values.items():
+                            if values:
+                                scalar_means[k] = sum(values) / len(values)
+                                # Also duplicate into a distributed/* namespace so W&B can plot on distributed/step.
+                                scalar_means[f"distributed/{k}"] = scalar_means[k]
+                        if baseline_scalar_values:
+                            for k, values in baseline_scalar_values.items():
+                                if values:
+                                    scalar_means[f"baseline/{k}"] = sum(values) / len(values)
+
+                        # PPO (or other env-based tasks) may publish scalars on an env-step clock under
+                        # a separate key to avoid colliding with train step. Merge them in as scalars
+                        # and only display them if the keys exist.
+                        if rl_metrics_response is not None and rl_metrics_response.value is not None:
+                            rl_dict = rl_metrics_response.value
+                            rl_metrics: List[LocalMetrics] = []
+                            for entry in rl_dict.values():
+                                if entry.value is None:
+                                    continue
+                                try:
+                                    rl_metrics.append(LocalMetrics.model_validate(entry.value))
+                                except ValidationError as e:
+                                    logger.debug(f"Skipping invalid rl metrics entry: {e}")
+                            if rl_metrics:
+                                # Keep per-trainer env metrics separate (like losses), and compute a
+                                # distributed mean across trainers for convenience.
+                                rl_scalar_values_by_source: Dict[int, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+                                env_steps_by_source: Dict[int, int] = {}
+                                for item in rl_metrics:
+                                    scalars = getattr(item, "scalars", None) or {}
+                                    if not isinstance(scalars, dict):
+                                        continue
+                                    env_steps_by_source[int(item.trainer_id)] = int(item.step)
+                                    for k, v in scalars.items():
+                                        try:
+                                            rl_scalar_values_by_source[int(item.trainer_id)][str(k)].append(float(v))
+                                        except Exception:
+                                            continue
+                                # Always expose the env-step clock when env-metrics exist (PPO only today).
+                                if env_steps_by_source:
+                                    scalar_means["charts/env_step"] = float(max(env_steps_by_source.values()))
+
+                                # Helper to extract a mean for a key from a source bucket
+                                def _mean_for(source_id: int, key: str) -> Optional[float]:
+                                    values = (rl_scalar_values_by_source.get(source_id) or {}).get(key) or []
+                                    if not values:
+                                        return None
+                                    return float(sum(values) / len(values))
+
+                                # Per-trainer episodic metrics
+                                trainer_return_means: List[float] = []
+                                trainer_length_means: List[float] = []
+                                for source_id in sorted(rl_scalar_values_by_source.keys()):
+                                    if source_id < 0:
+                                        continue
+                                    r = _mean_for(source_id, "charts/episodic_return")
+                                    l = _mean_for(source_id, "charts/episodic_length")
+                                    if r is not None:
+                                        scalar_means[f"episodic_return/trainer_{source_id}"] = r
+                                        trainer_return_means.append(r)
+                                    if l is not None:
+                                        scalar_means[f"episodic_length/trainer_{source_id}"] = l
+                                        trainer_length_means.append(l)
+                                    # Also expose per-trainer env step so we can log accurate W&B points.
+                                    if source_id in env_steps_by_source:
+                                        scalar_means[f"env_step/trainer_{source_id}"] = float(env_steps_by_source[source_id])
+
+                                # Baseline/data-server episodic metrics (if present)
+                                baseline_r = _mean_for(-1, "charts/episodic_return")
+                                baseline_l = _mean_for(-1, "charts/episodic_length")
+                                if baseline_r is not None:
+                                    scalar_means["episodic_return/baseline"] = baseline_r
+                                if baseline_l is not None:
+                                    scalar_means["episodic_length/baseline"] = baseline_l
+                                if -1 in env_steps_by_source:
+                                    scalar_means["env_step/baseline"] = float(env_steps_by_source[-1])
+
+                                # Distributed mean across trainers (and keep legacy charts/* keys as the mean).
+                                if trainer_return_means:
+                                    dist_r = float(sum(trainer_return_means) / len(trainer_return_means))
+                                    scalar_means["episodic_return/distributed"] = dist_r
+                                    scalar_means["charts/episodic_return"] = dist_r
+                                    non_baseline_env_steps = [step for source_id, step in env_steps_by_source.items() if source_id != -1]
+                                    scalar_means["env_step/distributed"] = max(non_baseline_env_steps)
+
+                                if trainer_length_means:
+                                    dist_l = float(sum(trainer_length_means) / len(trainer_length_means))
+                                    scalar_means["episodic_length/distributed"] = dist_l
+                                    scalar_means["charts/episodic_length"] = dist_l
+
+                        # Process eval metrics from the evaluator (published to DHT)
+                        if eval_metrics_response is not None and eval_metrics_response.value is not None:
+                            eval_dict = eval_metrics_response.value
+                            for entry in eval_dict.values():
+                                if entry.value is None:
+                                    continue
+                                try:
+                                    # Eval metrics are stored as plain dicts with eval/* keys
+                                    eval_data = entry.value
+                                    if isinstance(eval_data, dict):
+                                        for k, v in eval_data.items():
+                                            try:
+                                                scalar_means[str(k)] = float(v)
+                                            except (ValueError, TypeError):
+                                                pass
+                                except Exception as e:
+                                    logger.debug(f"Skipping invalid eval metrics entry: {e}")
+
+                        # Process baseline eval metrics from the baseline evaluator (published to DHT)
+                        if baseline_eval_metrics_response is not None and baseline_eval_metrics_response.value is not None:
+                            baseline_eval_dict = baseline_eval_metrics_response.value
+                            for entry in baseline_eval_dict.values():
+                                if entry.value is None:
+                                    continue
+                                try:
+                                    # Baseline eval metrics are stored as plain dicts with baseline_eval/* keys
+                                    baseline_eval_data = entry.value
+                                    if isinstance(baseline_eval_data, dict):
+                                        for k, v in baseline_eval_data.items():
+                                            try:
+                                                scalar_means[str(k)] = float(v)
+                                            except (ValueError, TypeError):
+                                                pass
+                                except Exception as e:
+                                    logger.debug(f"Skipping invalid baseline eval metrics entry: {e}")
+
+                        try:
+                            pipeline_infos = self._collect_progress_info()
+                        except Exception as e:
+                            logger.warning(f"Error retrieving or processing progress: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            pipeline_infos = []
+
+                        step_candidates = [
+                            int(s)
+                            for s in [baseline_step, distributed_step]
+                            if s is not None
+                        ]
+                        monitor_step = max(step_candidates) if step_candidates else 0
+                        log_entry = LogEntry(
+                            step=monitor_step,
+                            timestamp=time.time(),
+                            distributed_step=int(distributed_step) if distributed_step is not None else None,
+                            baseline_step=int(baseline_step) if baseline_step is not None else None,
+                            trainer_steps=trainer_steps,
+                            trainer_losses=trainer_losses,
+                            distributed_loss=distributed_loss,
+                            baseline_loss=baseline_loss,
+                            scalars=scalar_means,
+                            pipelines=pipeline_infos,
+                        )
+                        self.emit_log_entry(log_entry)
+                        last_logged_baseline_step = baseline_step
+                        last_logged_distributed_step = distributed_step
+                        last_logged_trainer_steps = trainer_steps
                     else:
                         if not waiting_for_metrics_logged:
                             logger.info(waiting_message)
@@ -608,6 +962,9 @@ def run_monitor(cfg: Config, refresh_period: int, store_ip_addresses_path: Optio
         if monitor.wandb_enabled:
             try:
                 wandb.finish()
+            except KeyboardInterrupt:
+                # If the user hits Ctrl-C during wandb's own shutdown/progress UI, don't re-raise.
+                logger.info("Wandb finish interrupted by user, exiting without waiting for sync.")
             except Exception as e:
                 logger.warning(f"Failed to finish wandb: {e}")
         monitor.shutdown()

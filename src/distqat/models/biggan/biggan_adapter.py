@@ -87,12 +87,34 @@ class BigGANAdapter(torch.nn.Module):
         self.device = config['device']
         self.batch_size = config['batch_size']
         self.config = config
-        self.G = Generator(**config).to(self.device)
-        self.D = Discriminator(**config).to(self.device)
+        
+        # Map short-form precision flags to Generator/Discriminator parameter names
+        # When using autocast, we keep the model in fp32 and let autocast handle precision.
+        # So we set G_fp16/D_fp16/G_bf16/D_bf16 to False to disable internal casting.
+        model_config = dict(config)
+        use_autocast = config.get('bf16', False) or config.get('fp16', False)
+        
+        if use_autocast:
+            # Disable internal model casting - autocast will handle it
+            model_config['G_fp16'] = False
+            model_config['D_fp16'] = False
+            model_config['G_bf16'] = False
+            model_config['D_bf16'] = False
+        else:
+            # No autocast - use manual casting if requested
+            if 'fp16' in model_config:
+                model_config['G_fp16'] = model_config['fp16']
+                model_config['D_fp16'] = model_config['fp16']
+            if 'bf16' in model_config:
+                model_config['G_bf16'] = model_config['bf16']
+                model_config['D_bf16'] = model_config['bf16']
+        
+        self.G = Generator(**model_config).to(self.device)
+        self.D = Discriminator(**model_config).to(self.device)
         self.GD = G_D(self.G, self.D)
 
         if config['ema']:
-            self.G_ema = Generator(**{**(config), 'skip_init':True, 'no_optim':True}).to(self.device)
+            self.G_ema = Generator(**{**model_config, 'skip_init':True, 'no_optim':True}).to(self.device)
             self.ema = ema(self.G, self.G_ema, config['ema_decay'], config['ema_start'])
         else:
             self.G_ema = None
@@ -102,22 +124,105 @@ class BigGANAdapter(torch.nn.Module):
         torch.backends.cudnn.benchmark = True
 
         self.num_classes = num_classes
+        
+        # Get precision flags for autocast (bf16 takes precedence)
+        use_fp16 = config.get('fp16', False)
+        use_bf16 = config.get('bf16', False)
+        self._use_autocast = use_bf16 or use_fp16
+        self._autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16 if use_fp16 else torch.float32
 
+        # Keep z_ in fp32 - autocast will handle conversion during forward
         self.z_, self.y_ = prepare_z_y(self.batch_size, self.G.dim_z, num_classes,
-                            device=self.device, fp16=config['fp16'])
+                            device=self.device, fp16=False, bf16=False)
 
         self.fixed_z, self.fixed_y = prepare_z_y(self.batch_size, self.G.dim_z,
                                     num_classes, device=self.device,
-                                    fp16=config['fp16'])  
+                                    fp16=False, bf16=False)
+        
+        # NOTE: When using autocast, keep model weights in fp32.
+        # Autocast automatically casts to bf16/fp16 for compute and back to fp32 for accumulation.
+        # This gives optimal tensor core utilization and numerical stability.
+        # Only convert to bf16 weights if NOT using autocast (manual precision mode).
+        if not self._use_autocast and use_bf16:
+            self.G = self.G.to(torch.bfloat16)
+            self.D = self.D.to(torch.bfloat16)
+            if self.G_ema is not None:
+                self.G_ema = self.G_ema.to(torch.bfloat16)
+        
+        # Debug: verify precision setup
+        logger.info(f"[PRECISION] G dtype (master weights): {next(self.G.parameters()).dtype}")
+        logger.info(f"[PRECISION] D dtype (master weights): {next(self.D.parameters()).dtype}")
+        logger.info(f"[PRECISION] z_ dtype: {self.z_.dtype}")
+        logger.info(f"[PRECISION] autocast enabled: {self._use_autocast}, dtype: {self._autocast_dtype}")
+        
         self.fixed_z.sample_()
         self.fixed_y.sample_()
 
         # Inception for evaluation using pre-computed moments
         # Initialize inception network if evaluation is enabled
         self.enable_eval = config.get('enable_eval', False)
+        self.inception_net = None
+
+
+    def forward(self, x, labels):
+        y = labels.to(torch.long)
+        x = x.to(self.device)
+        y = y.to(self.device)
+        
+        # Discriminator step
+        toggle_grad(self.D, True)
+        toggle_grad(self.G, False)
+        self.z_.sample_()
+        self.y_.sample_()
+        
+        with torch.autocast('cuda', dtype=self._autocast_dtype, enabled=self._use_autocast):
+            D_fake, D_real = self.GD(self.z_, self.y_, 
+                                x, y, train_G=False, 
+                                split_D=self.config['split_D'])
+            D_loss_real, D_loss_fake = losses.discriminator_loss(D_fake, D_real)
+            D_loss = (D_loss_real + D_loss_fake)
+
+        toggle_grad(self.D, False)
+        toggle_grad(self.G, True)
+        # Generator step
+        self.z_.sample_()
+        self.y_.sample_()
+        
+        with torch.autocast('cuda', dtype=self._autocast_dtype, enabled=self._use_autocast):
+            D_fake = self.GD(self.z_, self.y_, train_G=True, split_D=self.config['split_D'])
+            G_loss = losses.generator_loss(D_fake)
+
+        toggle_grad(self.D, True)
+        toggle_grad(self.G, True)
+
+        if self.config['ema']:
+            self.ema.update()
+
+        # Return losses in a tensor format compatible with distributed setup
+        # D_loss at index 0, G_loss at index -1
+        # Hack to serialize the losses correctly since the output needs to be a tensor with the same shape as the batch size and of type tensor, not distribution
+        out = torch.zeros(x.shape[0], device=D_loss.device, dtype=D_loss.dtype)
+        out[0] = D_loss
+        out[-1] = G_loss
+
+        return out
+
+
+    def init_inception_net(self, config: dict):
         if self.enable_eval:
             try:
-                self.inception_net = inception_utils.load_inception_net(parallel=False)
+                # IMPORTANT:
+                # The evaluator may set enable_eval=True while training peers keep it False.
+                # If we attach an nn.Module as an attribute, PyTorch will *register it as a submodule*,
+                # which changes parameter/state layouts and breaks hivemind state mirroring
+                # (e.g., "generator raised StopIteration" during load_state_from_peers).
+                #
+                # Store inception net in __dict__ directly to avoid registration.
+                inception_net = inception_utils.load_inception_net(parallel=False)
+                inception_net.eval()
+                for p in inception_net.parameters():
+                    p.requires_grad_(False)
+                self.__dict__["inception_net"] = inception_net
                 # Create sample function for inception evaluation
                 def sample_fn():
                     """Sample function for inception evaluation."""
@@ -125,7 +230,9 @@ class BigGANAdapter(torch.nn.Module):
                     self.y_.sample_()
                     G_to_use = (self.G_ema if self.config['ema'] and self.config.get('use_ema', False)
                                 else self.G)
-                    images = G_to_use(self.z_, G_to_use.shared(self.y_))
+                    # Use autocast to handle dtype conversion (model may have bf16 weights from checkpoint)
+                    with torch.autocast('cuda', dtype=self._autocast_dtype, enabled=self._use_autocast):
+                        images = G_to_use(self.z_, G_to_use.shared(self.y_))
                     return images, self.y_
                 self.sample_for_inception = sample_fn
                 
@@ -152,67 +259,24 @@ class BigGANAdapter(torch.nn.Module):
                 logger.warning(f"Failed to initialize inception network for evaluation: {e}")
                 self.enable_eval = False
 
-    def forward(self, x, label= None):
-        y = label.to(torch.long)
-        flag = x.shape[0] != self.batch_size
-        # if isinstance(batch, tuple) or isinstance(batch, list):
-        #     x, y = batch  # real images and labels
-        # else:
-        #     x = batch
-        #     y = args[0].to(torch.long)
-        #     flag = True
-        x = x.to(self.device)
-        y = y.to(self.device)
-        
-        # Discriminator step
-        toggle_grad(self.D, True)
-        toggle_grad(self.G, False)
-        self.z_.sample_()
-        self.y_.sample_()
-        D_fake, D_real = self.GD(self.z_, self.y_, 
-                            x, y, train_G=False, 
-                            split_D=self.config['split_D'])
-
-        D_loss_real, D_loss_fake = losses.discriminator_loss(D_fake, D_real)
-        D_loss = (D_loss_real + D_loss_fake)
-
-        toggle_grad(self.D, False)
-        toggle_grad(self.G, True)
-        # Generator step
-        self.z_.sample_()
-        self.y_.sample_()
-        D_fake = self.GD(self.z_, self.y_, train_G=True, split_D=self.config['split_D'])
-        G_loss = losses.generator_loss(D_fake)
-
-        toggle_grad(self.D, True)
-        toggle_grad(self.G, True)
-
-        if self.config['ema']:
-            self.ema.update()
-        
-
-        # Return losses in a tensor format compatible with distributed setup
-        # D_loss at index 0, G_loss at index -1
-        # Hack to serialize the losses correctly since the output needs to be a tensor with the same shape as the batch size and of type tensor, not distribution
-        out = torch.zeros(self.batch_size, device=D_loss.device, dtype=D_loss.dtype)
-        out[0] = D_loss
-        out[-1] = G_loss
-
-        if flag:
-            return D_fake
-        return out
-
     @torch.no_grad()
     def evaluate(self, step):
         """Evaluate model using Inception Score and FID."""
-        if not self.enable_eval or self.inception_net is None:
+        if not self.enable_eval:
             logger.debug("Evaluation disabled or inception network not initialized")
             return None
+        else:
+            if self.inception_net is None:
+                self.init_inception_net(self.config)
         
         # Check if pre-computed moments are available
         if (self.real_mu is None) or (self.real_sigma is None):
             logger.warning('Pre-computed real moments not available for FID; skipping evaluation.')
             return None
+        
+        # Initialize last valid FID tracker if not exists
+        if not hasattr(self, '_last_valid_fid'):
+            self._last_valid_fid = None
         
         # Accumulate generated activations
         pool, logits, labels = inception_utils.accumulate_inception_activations(
@@ -221,12 +285,36 @@ class BigGANAdapter(torch.nn.Module):
         IS_mean, IS_std = inception_utils.calculate_inception_score(logits.cpu().numpy(), num_splits=10)
         mu_g = torch.mean(pool, 0)
         sigma_g = inception_utils.torch_cov(pool, rowvar=False)
-        FID = inception_utils.torch_calculate_frechet_distance(mu_g, sigma_g, self.real_mu, self.real_sigma)
-        FID = float(FID.cpu().numpy())
         
-        logger.info(f'Step {step}: Inception Score is {IS_mean:.3f} +/- {IS_std:.3f}, FID is {FID:.4f}')
+        # Calculate FID - may return None if numerical issues occur
+        FID_result = inception_utils.torch_calculate_frechet_distance(mu_g, sigma_g, self.real_mu, self.real_sigma)
         
+        if FID_result is not None:
+            FID = float(FID_result.cpu().numpy())
+            self._last_valid_fid = FID
+            self.best_FID = min(self.best_FID, FID)
+            fid_status = ""
+        else:
+            # Use last valid FID if available, otherwise use a placeholder
+            if self._last_valid_fid is not None:
+                FID = self._last_valid_fid
+                fid_status = " (carried forward from previous valid)"
+            else:
+                FID = self.best_FID if self.best_FID < 999999.0 else None
+                fid_status = " (using best_FID as fallback)" if FID is not None else " (no valid FID yet)"
+        
+        # Update best IS (IS is usually more stable than FID)
         self.best_IS = max(self.best_IS, IS_mean)
-        self.best_FID = min(self.best_FID, FID)
+        
+        if FID is not None:
+            logger.info(f'Step {step}: IS={IS_mean:.3f}±{IS_std:.3f}, FID={FID:.4f}{fid_status}')
+        else:
+            logger.info(f'Step {step}: IS={IS_mean:.3f}±{IS_std:.3f}, FID=N/A (calculation failed)')
 
-        return {"IS_mean": IS_mean, "IS_std": IS_std, "FID": FID, "best_IS": self.best_IS, "best_FID": self.best_FID}
+        return {
+            "IS_mean": IS_mean, 
+            "IS_std": IS_std, 
+            "FID": FID,  # May be None if all calculations failed
+            "best_IS": self.best_IS, 
+            "best_FID": self.best_FID if self.best_FID < 999999.0 else None
+        }

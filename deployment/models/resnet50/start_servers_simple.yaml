@@ -1,0 +1,275 @@
+# start_servers_simple.yaml
+# Simplified version - assumes initial_peers.txt already exists on all nodes
+# Usage:
+#   ansible-playbook -i inventory.yaml start_servers_simple.yaml                    # default: action=all
+#   ansible-playbook -i inventory.yaml start_servers_simple.yaml -e action=stop     # stop only
+#   ansible-playbook -i inventory.yaml start_servers_simple.yaml -e action=restart  # restart
+#   ansible-playbook -i inventory.yaml start_servers_simple.yaml -e action=start    # start only
+#   ansible-playbook -i inventory.yaml start_servers_simple.yaml -e action=setup    # setup only (no start)
+#   ansible-playbook -i inventory.yaml start_servers_simple.yaml -e action=all      # full setup + start
+- name: Unified distqat + resnet50 setup (monitor first, then workers)
+  hosts: "*resnet50*"
+  gather_facts: true
+
+  vars:
+    # -------------------------
+    # Action control (stop, start, restart, setup, all, pull)
+    # -------------------------
+    action: "all"
+
+    # -------------------------
+    # Inventory / groups
+    # -------------------------
+    monitor_group_name: "monitor"
+    baseline_group_name: "baseline"
+    # eval_group_name: "eval_node"
+    worker_group_names:
+      - "gpu_node_a6000"
+
+    # -------------------------
+    # Node list/IDs
+    # -------------------------
+    # All nodes from inventory.yaml, in assignment order:
+    node_name_id_map:
+      resnet50-test1_1: 0
+      resnet50-test1_2: 1
+      resnet50-test1_3: 2
+      resnet50-test1_4: 3
+
+    resnet50_node_id: "{{ node_name_id_map[inventory_hostname] | default(-1) }}"
+
+    # -------------------------
+    # Repo / install
+    # -------------------------
+    github_pat: "{{ lookup('env', 'GITHUB_PAT') }}"
+    repo_url: "https://{{ github_pat }}@github.com/SEMRON/distqat.git"
+    repo_dest: "{{ ansible_facts['env']['HOME'] }}/distqat"
+
+    # -------------------------
+    # uv / python
+    # -------------------------
+    uv_bin: "/snap/bin/uv"
+    python_version: "3.10"
+
+    # -------------------------
+    # Tokens (prefer --extra-vars or Vault)
+    # -------------------------
+    wandb_api_key: "{{ lookup('env', 'WANDB_API_KEY') }}"
+    hf_token: "{{ lookup('env', 'HF_TOKEN') }}"
+
+    # -------------------------
+    # Model / network selection (parameterized)
+    # -------------------------
+    resnet50_network_type: "resnet50"
+    resnet50_config_path: "configs/{{ resnet50_network_type }}.yaml"
+
+    # -------------------------
+    # Paths / files
+    # -------------------------
+    resnet50_logs_dir: "{{ repo_dest }}/logs/resnet50"
+    initial_peers_filename: "initial_peers.txt"
+    wandb_run_id_filename: "wandb_run_id.txt"
+
+    # -------------------------
+    # Services
+    # -------------------------
+    trainer_client_exec: "export WANDB_API_KEY={{ wandb_api_key }} && export HF_TOKEN={{ hf_token }} && {{ repo_dest }}/.venv/bin/python start_trainer_client.py --config-path {{ resnet50_config_path }}"
+
+    worker_exec: "export WANDB_API_KEY={{ wandb_api_key }} && export HF_TOKEN={{ hf_token }} && {{ repo_dest }}/.venv/bin/python start_servers.py --config-path {{ resnet50_config_path }} --initial-peers-path {{ initial_peers_remote_path }} --num-servers 1 --stage-index 0 --expert-index {{ resnet50_node_id }} --data-num-workers 2"
+
+    baseline_exec: "export WANDB_API_KEY={{ wandb_api_key }} && export HF_TOKEN={{ hf_token }} && {{ repo_dest }}/.venv/bin/python run_local.py --config-path {{ resnet50_config_path }} --num-servers 0 --diloco-gradient-accumulation-steps {{ num_workers }} --data-num-workers 2 --no-diloco"
+    # -------------------------
+    # Systemd environment injection (visible to services)
+    # -------------------------
+    systemd_env_dir: "/etc/default"
+    systemd_env_file: "{{ systemd_env_dir }}/distqat-resnet50.env"
+
+    # -------------------------
+    # Python extras per role
+    # -------------------------
+    worker_extras: "gpuspecific"
+
+    # -------------------------
+    # DiLoCo inner steps per node (calibrated from measured speeds)
+    # -------------------------
+    diloco_inner_steps_map:
+    #   # RTX6000 nodes (expert 0-3)
+      # resnet50-test1_1: 45   # expert 0, speed 0.94
+      # resnet50-test1_2: 45   # expert 1, speed 0.99
+      # resnet50-test1_3: 45   # expert 2, speed 0.92
+      # resnet50-test1_4: 45   # expert 3, speed 0.99
+      # # A6000 nodes (expert 4-7, slowest)
+      # resnet50-test2_1: 35   # expert 4, speed 0.88 (slowest)
+      # resnet50-test2_2: 35   # expert 5, speed 0.91
+      # resnet50-test2_3: 35   # expert 6, speed 0.93
+      # resnet50-test2_4: 35   # expert 7, speed 0.92
+      # # A100 nodes (expert 8-11, fastest)
+      # resnet50-test3_1: 65   # expert 8, speed 1.00 (fastest)
+      # resnet50-test3_2: 65   # expert 9, speed 1.00 (fastest)
+      # resnet50-test3_3: 65   # expert 10, speed 0.97
+      # resnet50-test3_4: 65   # expert 11, speed 0.97
+      # # L40S nodes (expert 12-15)
+      # resnet50-test4_1: 50   # expert 12, speed 0.94
+      # resnet50-test4_2: 50   # expert 13, speed 0.96
+      # resnet50-test4_3: 50   # expert 14, speed 0.90
+      # resnet50-test4_4: 50   # expert 15, speed 0.95
+    default_diloco_inner_steps: 64
+    baseline_inner_steps: "{{ default_diloco_inner_steps }}"
+
+    # -------------------------
+    # Evaluation interval
+    # -------------------------
+    # eval_interval: 120
+
+  tasks:
+    # =========================================================================
+    # COMPUTE ROLE MEMBERSHIP
+    # =========================================================================
+    - name: Compute role membership and monitor host
+      ansible.builtin.set_fact:
+        is_monitor: "{{ inventory_hostname in (groups[monitor_group_name] | default([])) }}"
+        is_baseline: "{{ inventory_hostname in (groups[baseline_group_name] | default([])) }}"
+        is_worker: "{{ inventory_hostname in node_name_id_map }}"
+        # is_eval: "{{ inventory_hostname in (groups[eval_group_name] | default([])) }}"
+        monitor_host: "{{ (groups[monitor_group_name] | default([])) | first | default('') }}"
+        initial_peers_remote_path: "{{ resnet50_logs_dir }}/{{ initial_peers_filename }}"
+        initial_peers_local_tmp: "/tmp/{{ initial_peers_filename }}.resnet50.from_monitor"
+        wandb_run_id_remote_path: "{{ resnet50_logs_dir }}/{{ wandb_run_id_filename }}"
+        wandb_run_id_local_tmp: "/tmp/{{ wandb_run_id_filename }}.resnet50.from_monitor"
+        inner_steps: "{{ diloco_inner_steps_map[inventory_hostname] | default(default_diloco_inner_steps) }}"
+        num_workers: "{{ node_name_id_map | length }}"
+
+    # =========================================================================
+    # STOP ACTION - Stop services only
+    # =========================================================================
+
+    - name: Kill any remaining distqat processes (action=stop)
+      when: action in ["all", "stop", "restart"]
+      ansible.builtin.shell: pkill -f distqat || true
+      become: true
+      failed_when: false
+
+    # =========================================================================
+    # SETUP TASKS - Environment and config (action=all or action=setup)
+    # =========================================================================
+    - name: Write environment file for services
+      when: action in ["all", "setup"]
+      ansible.builtin.copy:
+        dest: "{{ systemd_env_file }}"
+        owner: root
+        group: root
+        mode: "0640"
+        content: |
+          # Managed by Ansible
+          {% if wandb_api_key | default('') | length > 0 -%}
+          WANDB_API_KEY={{ wandb_api_key }}
+          {% endif -%}
+          {% if hf_token | default('') | length > 0 -%}
+          HF_TOKEN={{ hf_token }}
+          {% endif -%}
+      become: true
+
+    - name: Copy config file to remote nodes
+      when: action in ["all", "setup"]
+      ansible.builtin.copy:
+        src: "../../../{{ resnet50_config_path }}"
+        dest: "{{ repo_dest }}/{{ resnet50_config_path }}"
+        owner: "{{ ansible_facts['env']['USER'] | default('ubuntu') }}"
+        group: "{{ ansible_facts['env']['USER'] | default('ubuntu') }}"
+        mode: '0644'
+      
+    - name: Ensure resnet50 logs dir exists
+      when:
+        - action in ["all", "setup"]
+        - (is_monitor or is_worker or is_baseline)
+      ansible.builtin.file:
+        path: "{{ resnet50_logs_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Git stash latest changes
+      when: action in ["all", "setup", "pull"]
+      ansible.builtin.shell: git -C {{ repo_dest }} stash 
+      become: false
+        
+    - name: Git pull latest changes
+      when: action in ["all", "setup", "pull"]
+      ansible.builtin.shell: git -C {{ repo_dest }} pull origin master --rebase
+      become: false
+
+    - name: Git pop stash
+      when: action in ["all", "setup", "pull"]
+      ansible.builtin.shell: git -C {{ repo_dest }} stash pop
+      become: false
+
+    # =========================================================================
+    # MONITOR: Start trainer client service first (action=all or action=start/restart)
+    # =========================================================================
+    - name: Start trainer client on monitor (background)
+      when:
+        - is_monitor
+        - action in ["all", "start", "restart"]
+      ansible.builtin.shell: |
+        cd {{ repo_dest }} && \
+        nohup bash -c '{{ trainer_client_exec }}' > {{ resnet50_logs_dir }}/trainer_client.log 2>&1 &
+        echo $!
+      register: trainer_pid
+      become: false
+
+    - name: Show trainer client PID
+      when:
+        - is_monitor
+        - action in ["all", "start", "restart"]
+      ansible.builtin.debug:
+        msg: "Trainer client started with PID: {{ trainer_pid.stdout }}"
+
+    - name: Wait for monitor to initialize
+      when:
+        - action in ["all", "start", "restart"]
+      ansible.builtin.pause:
+        seconds: 5
+      run_once: true
+
+    # =========================================================================
+    # WORKER: Start worker service (action=all or action=start/restart)
+    # =========================================================================
+    - name: Start worker service (background)
+      when:
+        - is_worker
+        - not is_monitor
+        - action in ["all", "start", "restart"]
+      ansible.builtin.shell: |
+        cd {{ repo_dest }} && \
+        nohup bash -c '{{ worker_exec }}' > {{ resnet50_logs_dir }}/worker_{{ resnet50_node_id }}.log 2>&1 &
+        echo $!
+      register: worker_pid
+      become: false
+
+    - name: Show worker PID
+      when:
+        - is_worker
+        - not is_monitor
+        - action in ["all", "start", "restart"]
+      ansible.builtin.debug:
+        msg: "Worker {{ resnet50_node_id }} started with PID: {{ worker_pid.stdout }}"
+
+    # =========================================================================
+    # BASELINE: Run standalone baseline orchestrator (action=all or action=setup/start/restart)
+    # =========================================================================
+    - name: Start baseline service (background)
+      when:
+        - is_baseline
+        - action in ["all", "start", "restart"]
+      ansible.builtin.shell: |
+        cd {{ repo_dest }} && \
+        nohup bash -c '{{ baseline_exec }}' > {{ resnet50_logs_dir }}/baseline.log 2>&1 &
+        echo $!
+      register: baseline_pid
+      become: false
+
+    - name: Show baseline PID
+      when:
+        - is_baseline
+        - action in ["all", "start", "restart"]
+      ansible.builtin.debug:
+        msg: "Baseline started with PID: {{ baseline_pid.stdout }}"

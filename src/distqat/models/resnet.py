@@ -118,9 +118,25 @@ class ResNet(nn.Module):
 def head_sample_input(batch_size, num_channels: int, img_size: int):
     return (t.empty((batch_size, num_channels, img_size, img_size)),)
 
-def back_sample_input(batch_size):
-    # Keep existing shape assumptions; ignore model_config for now (could be extended later)
-    return t.empty((batch_size, 128, 16, 16))
+def resnet18_tail_sample_input(batch_size: int, img_size: int):
+    """Sample input for `resnet18.tail` given the original image size.
+
+    The `resnet18.head` in this repo keeps spatial size in conv1/layer1, then downsamples once in layer2 (stride=2).
+    """
+    s = (img_size + 1) // 2
+    return t.empty((batch_size, 128, s, s))
+
+
+def resnet50_tail_sample_input(batch_size: int, img_size: int):
+    """Sample input for `resnet50.tail` given the original image size.
+
+    With the ImageNet-style stem (conv1 stride=2 + maxpool stride=2) and layer2 stride=2 in `resnet50.head`,
+    the spatial size is downsampled by ~8x: 224 -> 112 -> 56 -> 28.
+    """
+    s1 = (img_size + 1) // 2  # conv1, stride=2
+    s2 = (s1 + 1) // 2       # maxpool, stride=2
+    s3 = (s2 + 1) // 2       # layer2, stride=2 (bottleneck conv2)
+    return t.empty((batch_size, 512, s3, s3))
 
 
 @register_expert_class("resnet18.full", head_sample_input)
@@ -188,7 +204,7 @@ class Resnet18Front(nn.Module):
         out = self.layer2(out)
         return out
 
-@register_expert_class("resnet18.tail", back_sample_input)
+@register_expert_class("resnet18.tail", resnet18_tail_sample_input)
 class Resnet18Back(nn.Module):
     def __init__(self, *args, num_classes: int, **kwargs):
         super().__init__()
@@ -196,6 +212,68 @@ class Resnet18Back(nn.Module):
         num_blocks = [2, 2, 2, 2]
 
         self.in_planes = 128
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.linear = nn.Linear(512 * block.expansion, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.layer3(x)
+        out = self.layer4(out)
+        out = F.adaptive_avg_pool2d(out, 1)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+@register_expert_class("resnet50.head", head_sample_input)
+class Resnet50Head(nn.Module):
+    def __init__(self, *args, num_channels: int, **kwargs):
+        super().__init__()
+        block = Bottleneck
+        num_blocks = [3, 4, 6, 3]
+
+        self.in_planes = 64
+        # ImageNet-style stem for ResNet-50 split (keeps activation sizes reasonable for 224x224 inputs)
+        self.conv1 = nn.Conv2d(num_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU()
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.maxpool(out)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        return out
+
+@register_expert_class("resnet50.tail", resnet50_tail_sample_input)
+class Resnet50Tail(nn.Module):
+    def __init__(self, *args, num_classes: int, **kwargs):
+        super().__init__()
+        block = Bottleneck
+        num_blocks = [3, 4, 6, 3]
+
+        # `resnet50.head` ends after layer2, whose output channels are 128 * expansion = 512
+        self.in_planes = 512
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
         self.linear = nn.Linear(512 * block.expansion, num_classes)

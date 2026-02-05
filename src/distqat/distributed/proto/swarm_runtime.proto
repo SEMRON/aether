@@ -7,6 +7,8 @@ service SwarmConnectionHandler {
   rpc info(ExpertUID) returns (ExpertInfo);
   rpc forward(ExpertRequest) returns (ExpertResponse);
   rpc backward(ExpertRequest) returns (ExpertResponse);
+  // Forward pass using globally averaged model weights (for distributed RL policy inference)
+  rpc forward_averaged(ExpertRequest) returns (ExpertResponse);
 }
 
 message SwarmExpertRequest {

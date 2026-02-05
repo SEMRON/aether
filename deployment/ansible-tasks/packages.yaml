@@ -1,0 +1,20 @@
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - git
+      - python3
+      - python3-pip
+      - libpython3-dev
+      - libopenmpi-dev
+    state: present
+    update_cache: yes
+  become: yes
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
+- name: Install astral-uv with snap
+  community.general.snap:
+      name: astral-uv
+      state: present
+      classic: yes
+  become: yes
+  when: ansible_facts['distribution'] == 'Ubuntu'

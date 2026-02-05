@@ -10,7 +10,7 @@ data:
   # dataset_split: "train"
 
   num_workers: 0
-  precision: "fp16-mixed"
+  precision: "bf16-mixed"
   task_type: "speech"
   full_model_name: "facebook/wav2vec2-base"
   sampling_rate: 16000
@@ -24,22 +24,33 @@ diloco:
     adam_betas2: 0.95
   outer_optim:
     type: "sgd"
-    sgd_lr: 0.07
+    sgd_lr: 0.3
     sgd_momentum: 0.9
     sgd_nesterov: True
-  inner_steps: 500
+  inner_steps: 100
   outer_steps: 100
   batch_size_per_step: 32
   min_refresh_period: 5.0
   max_refresh_period: 30.0
-  averaging_timeout: 60.0
   verbose: true
+
+  metadata_expiration: 900.0
+  averaging_timeout: 7200.0
+  target_group_size: 4
+  min_group_size: 4
+  min_matchmaking_time: 3600.0
+  request_timeout: 30.0
+
+network:
+  expert_dht_update_period: 30.0
+  expert_dht_expiration: 900.0
+  metrics_expiration: 900.0
 
 model_pipeline:
   pipeline:
     - model_name: "wav2vec2.full"
-  forward_timeout: 90.0
-  backward_timeout: 180.0
+  forward_timeout: 180.0
+  backward_timeout: 360.0
 
 param_mirror:
   enable: false
@@ -48,3 +59,7 @@ param_mirror:
 world_size: 1
 device: "cuda"
 log_dir: "logs/wav2vec2_full"
+
+checkpoint_dir: "checkpoints"
+checkpoint_keep_history: false
+checkpoint_update_period: 30
